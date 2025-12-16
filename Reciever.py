@@ -12,20 +12,18 @@ import os
 
 # --- ГЛОБАЛЬНЫЕ НАСТРОЙКИ ---
 BAUD_RATE = 9600
-MAX_POINTS = 50  # Начальная ширина окна (количество точек)
 MAX_COM_PORT_CHECK = 32
 
-# Глобальные переменные для управления масштабом
-y_min_manual = 20.0
-y_max_manual = 30.0
-auto_scale_y = True  # По умолчанию включен автоскейл
+# Переменные для управления осями (значения по умолчанию)
+current_y_min = 15.0
+current_y_max = 35.0
+current_window_width = 50  # Сколько точек показывать по оси X
 
 
 # ==========================================
-# 1. ЛОГИКА ПОИСКА ПОРТА (Без изменений)
+# 1. ЛОГИКА ПОИСКА ПОРТА
 # ==========================================
 def check_port_for_data(port_name):
-    # Используем print для отладки в консоль, пока GUI не запущен
     print(f"   [...] Проверка {port_name}...", end=" ", flush=True)
     ser = None
     try:
@@ -92,7 +90,7 @@ def find_correct_port():
 
 
 # ==========================================
-# 2. ПОДГОТОВКА (Порт и CSV)
+# 2. ПОДГОТОВКА
 # ==========================================
 
 serial_connection = find_correct_port()
@@ -117,10 +115,9 @@ x_data = []
 y_data = []
 
 # ==========================================
-# 3. GUI ИНТЕРФЕЙС (TKINTER)
+# 3. GUI ИНТЕРФЕЙС
 # ==========================================
 
-# Создаем главное окно
 root = tk.Tk()
 root.title(f"Монитор температуры ({serial_connection.port})")
 root.geometry("900x600")
@@ -129,93 +126,115 @@ root.geometry("900x600")
 control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE)
 control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
-# Элементы управления
+# Лейбл заголовка
 lbl_settings = tk.Label(control_frame, text="Настройки осей:", font=("Arial", 10, "bold"))
-lbl_settings.pack(side=tk.LEFT, padx=5)
+lbl_settings.pack(side=tk.LEFT, padx=10)
 
-# Чекбокс авто-масштаба
-var_autoscale = tk.BooleanVar(value=True)
-chk_auto = tk.Checkbutton(control_frame, text="Авто-Y", variable=var_autoscale)
-chk_auto.pack(side=tk.LEFT, padx=10)
+# 1. Настройки Y (Температура)
+frame_y = tk.Frame(control_frame)
+frame_y.pack(side=tk.LEFT, padx=10)
 
-# Поля ручного ввода Y
-lbl_min = tk.Label(control_frame, text="Min Y:")
-lbl_min.pack(side=tk.LEFT)
-entry_min = tk.Entry(control_frame, width=5)
-entry_min.insert(0, "20")
-entry_min.pack(side=tk.LEFT, padx=2)
+tk.Label(frame_y, text="Min Y:").pack(side=tk.LEFT)
+entry_min_y = tk.Entry(frame_y, width=5)
+entry_min_y.insert(0, str(current_y_min))
+entry_min_y.pack(side=tk.LEFT, padx=2)
 
-lbl_max = tk.Label(control_frame, text="Max Y:")
-lbl_max.pack(side=tk.LEFT)
-entry_max = tk.Entry(control_frame, width=5)
-entry_max.insert(0, "35")
-entry_max.pack(side=tk.LEFT, padx=2)
+tk.Label(frame_y, text="Max Y:").pack(side=tk.LEFT)
+entry_max_y = tk.Entry(frame_y, width=5)
+entry_max_y.insert(0, str(current_y_max))
+entry_max_y.pack(side=tk.LEFT, padx=2)
+
+# Разделитель
+ttk.Separator(control_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
+
+# 2. Настройки X (Ширина окна)
+frame_x = tk.Frame(control_frame)
+frame_x.pack(side=tk.LEFT, padx=10)
+
+tk.Label(frame_x, text="Точек (X):").pack(side=tk.LEFT)
+entry_width_x = tk.Entry(frame_x, width=5)
+entry_width_x.insert(0, str(current_window_width))
+entry_width_x.pack(side=tk.LEFT, padx=2)
 
 
-# Кнопка применения
+# 3. Кнопка Применить
 def apply_settings():
-    global y_min_manual, y_max_manual, auto_scale_y
-    auto_scale_y = var_autoscale.get()
+    global current_y_min, current_y_max, current_window_width
     try:
-        y_min_manual = float(entry_min.get())
-        y_max_manual = float(entry_max.get())
+        # Считываем значения
+        new_min = float(entry_min_y.get())
+        new_max = float(entry_max_y.get())
+        new_width = int(entry_width_x.get())
+
+        # Проверка на адекватность
+        if new_min >= new_max:
+            print("Ошибка: Min Y должен быть меньше Max Y")
+            return
+        if new_width < 2:
+            print("Ошибка: Ширина X должна быть > 1")
+            return
+
+        # Применяем
+        current_y_min = new_min
+        current_y_max = new_max
+        current_window_width = new_width
+
+        # Обрезаем данные, если новое окно меньше текущего количества точек
+        if len(y_data) > current_window_width:
+            del y_data[:len(y_data) - current_window_width]
+            del x_data[:len(x_data) - current_window_width]
+
+        print(f"Настройки обновлены: Y[{new_min}:{new_max}], X_width={new_width}")
+
     except ValueError:
-        print("Ошибка: введите числа в поля Min/Max")
+        print("Ошибка: Введите корректные числа")
 
 
-btn_apply = tk.Button(control_frame, text="Применить", command=apply_settings, bg="#dddddd")
-btn_apply.pack(side=tk.LEFT, padx=10)
+btn_apply = tk.Button(control_frame, text="Применить", command=apply_settings, bg="#dddddd", relief=tk.RAISED)
+btn_apply.pack(side=tk.LEFT, padx=15)
 
-# Текущее значение (Label)
+# Текущее значение справа
 lbl_current_temp = tk.Label(control_frame, text="T: --.-- °C", font=("Arial", 14, "bold"), fg="blue")
 lbl_current_temp.pack(side=tk.RIGHT, padx=20)
 
-# --- ГРАФИК (Embedding Matplotlib) ---
-# Создаем фигуру Matplotlib (без pyplot интерфейса)
+# --- ГРАФИК ---
 fig = Figure(figsize=(5, 4), dpi=100)
 ax = fig.add_subplot(111)
 
-# Настройка стиля
 ax.grid(True, linestyle='--', alpha=0.7)
 ax.set_ylabel("Температура (°C)")
 ax.set_xlabel("Время")
 line, = ax.plot([], [], 'r-', linewidth=2)
 
-# Встраиваем фигуру в Tkinter
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.draw()
 canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
 
 
-# ВАЖНО: Мы НЕ добавляем NavigationToolbar2Tk, чтобы убрать кнопки снизу.
-
 # ==========================================
 # 4. ФУНКЦИЯ ОБНОВЛЕНИЯ
 # ==========================================
 def update_graph(frame):
-    # Чтение данных
+    # Чтение
     if serial_connection.in_waiting > 0:
         try:
             raw = serial_connection.readline().decode('utf-8').strip()
             val = float(raw)
 
-            # Время
             now_str = datetime.now().strftime('%H:%M:%S')
             full_time_csv = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
 
-            # Данные в память
             y_data.append(val)
             x_data.append(now_str)
 
-            if len(y_data) > MAX_POINTS:
+            # Используем переменную current_window_width вместо константы
+            if len(y_data) > current_window_width:
                 y_data.pop(0)
                 x_data.pop(0)
 
-            # CSV
             csv_writer.writerow([full_time_csv, val])
             csv_file.flush()
 
-            # Обновляем текст в GUI (справа сверху)
             lbl_current_temp.config(text=f"T: {val:.2f} °C")
 
         except ValueError:
@@ -223,32 +242,26 @@ def update_graph(frame):
         except Exception as e:
             print(f"Err: {e}")
 
-    # Отрисовка линии
+    # Отрисовка
     line.set_data(range(len(y_data)), y_data)
 
-    # Настройка осей
-    ax.set_xlim(0, MAX_POINTS)
-
-    # Логика масштабирования Y
-    if auto_scale_y:
-        if y_data:
-            curr_min, curr_max = min(y_data), max(y_data)
-            margin = (curr_max - curr_min) * 0.1 if curr_max != curr_min else 1.0
-            ax.set_ylim(curr_min - margin, curr_max + margin)
-        else:
-            ax.set_ylim(0, 50)
-    else:
-        # Ручной режим (берем значения из переменных)
-        ax.set_ylim(y_min_manual, y_max_manual)
+    # ПРИМЕНЕНИЕ НАСТРОЕК ОСЕЙ
+    # Ось X всегда от 0 до ширины окна
+    ax.set_xlim(0, current_window_width)
+    # Ось Y жестко задается пользователем
+    ax.set_ylim(current_y_min, current_y_max)
 
     # Подписи оси X
     ax.set_xticks(range(len(x_data)))
     ax.set_xticklabels(x_data, rotation=45, ha='right')
 
-    # Прореживание меток
+    # Умное прореживание подписей (чем больше точек, тем реже подписи)
+    step = max(1, len(x_data) // 10)
     for i, label in enumerate(ax.xaxis.get_ticklabels()):
-        if i % 5 != 0 and i != len(x_data) - 1:
+        if i % step != 0 and i != len(x_data) - 1:
             label.set_visible(False)
+        else:
+            label.set_visible(True)
 
     return line,
 
@@ -256,18 +269,13 @@ def update_graph(frame):
 # ==========================================
 # 5. ЗАПУСК
 # ==========================================
-
-# Анимация
 ani = animation.FuncAnimation(fig, update_graph, interval=100)
 
 
-# Функция корректного закрытия
 def on_closing():
-    print("\nЗавершение работы...")
     try:
         serial_connection.close()
         csv_file.close()
-        print(f"Файл сохранен: {os.path.abspath(filename)}")
     except:
         pass
     root.quit()
@@ -276,5 +284,5 @@ def on_closing():
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
 
-print("Запуск графического интерфейса...")
+print("GUI запущен...")
 tk.mainloop()
