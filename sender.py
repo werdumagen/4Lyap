@@ -6,7 +6,7 @@ import math
 # --- НАСТРОЙКИ ---
 SERIAL_PORT = 'COM22'  # Порт отправки (проверьте, что это правильная пара!)
 BAUD_RATE = 9600
-
+#2
 
 def generate_temperature(step):
     """Генерирует плавную температуру"""
