@@ -10,25 +10,46 @@ import time
 import csv
 import os
 
-# --- ГЛОБАЛЬНЫЕ НАСТРОЙКИ ---
+# --- GLOBAL SETTINGS ---
 BAUD_RATE = 9600
 MAX_COM_PORT_CHECK = 32
 
-# Настройки по умолчанию
+# Default Axis Settings
 current_y_min = 15.0
 current_y_max = 35.0
-current_window_width = 50  # Начальное количество точек
+current_window_width = 50
 
-# Хранилище ВСЕЙ истории сессии (чтобы можно было отмотать назад)
+# Data Buffers (Full Session History)
 full_history_x = []
 full_history_y = []
 
+# Theme State (True = Dark Mode by default)
+is_dark_mode = True
+
+# Colors definition
+THEME = {
+    'dark': {
+        'bg': '#2b2b2b', 'fg': '#ffffff',
+        'entry_bg': '#404040', 'entry_fg': '#ffffff',
+        'btn_bg': '#505050', 'btn_fg': '#ffffff',
+        'plot_bg': '#2b2b2b', 'axis_color': '#ffffff',
+        'line_color': '#FFFF00'  # Yellow for Dark Mode
+    },
+    'light': {
+        'bg': '#f0f0f0', 'fg': '#000000',
+        'entry_bg': '#ffffff', 'entry_fg': '#000000',
+        'btn_bg': '#dddddd', 'btn_fg': '#000000',
+        'plot_bg': '#f0f0f0', 'axis_color': '#000000',
+        'line_color': '#FF0000'  # Red for Light Mode
+    }
+}
+
 
 # ==========================================
-# 1. ПОИСК ПОРТА
+# 1. PORT SCANNING LOGIC
 # ==========================================
 def check_port_for_data(port_name):
-    print(f"   [...] Проверка {port_name}...", end=" ", flush=True)
+    print(f"   [...] Checking {port_name}...", end=" ", flush=True)
     ser = None
     try:
         ser = serial.Serial(port_name, BAUD_RATE, timeout=1.5)
@@ -36,7 +57,7 @@ def check_port_for_data(port_name):
         time.sleep(1.1)
 
         if ser.in_waiting == 0:
-            print("ПУСТО")
+            print("EMPTY")
             ser.close()
             return None
 
@@ -52,15 +73,15 @@ def check_port_for_data(port_name):
                 pass
 
         if valid_floats >= 2:
-            print(f"УСПЕХ! (Чисел: {valid_floats})")
+            print(f"SUCCESS! (Numbers found: {valid_floats})")
             return ser
         else:
-            print(f"МУСОР")
+            print(f"GARBAGE")
             ser.close()
             return None
 
     except serial.SerialException:
-        print("ЗАНЯТ/НЕТ")
+        print("BUSY/NONE")
         if ser: ser.close()
         return None
     except Exception:
@@ -70,10 +91,12 @@ def check_port_for_data(port_name):
 
 def find_correct_port():
     print("=" * 40)
-    print("ПОИСК ДАТЧИКА...")
+    print("SEARCHING FOR SENSOR...")
+    print("=" * 40)
     system_ports = [p.device for p in serial.tools.list_ports.comports()]
     candidates = []
     candidates.extend(system_ports)
+    # Brute-force check for hidden ports
     for i in range(1, MAX_COM_PORT_CHECK + 1):
         p_name = f"COM{i}"
         if p_name not in candidates:
@@ -94,20 +117,22 @@ def find_correct_port():
 
 
 # ==========================================
-# 2. ПОДГОТОВКА ФАЙЛОВ И ПОРТА
+# 2. SETUP (Port & CSV)
 # ==========================================
 
 serial_connection = find_correct_port()
 
 if serial_connection is None:
-    print("Датчик не найден. Запустите Sender и проверьте порты.")
-    input("Нажмите Enter для выхода...")
+    print("\nError: Sensor not found.")
+    print("1. Make sure Sender is running.")
+    print("2. Check virtual ports pair.")
+    input("Press Enter to exit...")
     exit()
 
-# Генерируем имя файла
+# CSV Setup
 start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 filename = f"{start_time_str}.csv"
-print(f"Файл данных: {filename}")
+print(f"\nLogging to file: {filename}")
 
 csv_file = open(filename, mode='w', newline='', encoding='utf-8')
 csv_writer = csv.writer(csv_file, delimiter=',')
@@ -115,47 +140,69 @@ csv_writer.writerow(["System Time", "Temperature"])
 csv_file.flush()
 
 # ==========================================
-# 3. ГРАФИЧЕСКИЙ ИНТЕРФЕЙС
+# 3. GUI SETUP
 # ==========================================
 
 root = tk.Tk()
-root.title(f"PRO Monitor ({serial_connection.port})")
+root.title(f"Temperature Monitor PRO ({serial_connection.port})")
 root.geometry("1000x700")
 
-# --- ПАНЕЛЬ НАСТРОЕК ---
+# --- UI ELEMENTS CREATION ---
+
+# Main Control Frame
 control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE)
 control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
-lbl_settings = tk.Label(control_frame, text="ОСИ:", font=("Arial", 10, "bold"))
-lbl_settings.pack(side=tk.LEFT, padx=10)
+# Helper to create styled labels/entries
+ui_elements = []  # Keep track to update colors later
 
-# Настройки Y
+
+def create_label(parent, text):
+    lbl = tk.Label(parent, text=text, font=("Arial", 10))
+    lbl.pack(side=tk.LEFT, padx=5)
+    ui_elements.append({'type': 'label', 'widget': lbl})
+    return lbl
+
+
+def create_entry(parent, default_val, width=5):
+    ent = tk.Entry(parent, width=width)
+    ent.insert(0, str(default_val))
+    ent.pack(side=tk.LEFT, padx=2)
+    ui_elements.append({'type': 'entry', 'widget': ent})
+    return ent
+
+
+# Settings UI
+lbl_title = tk.Label(control_frame, text="SETTINGS:", font=("Arial", 10, "bold"))
+lbl_title.pack(side=tk.LEFT, padx=10)
+ui_elements.append({'type': 'label_bold', 'widget': lbl_title})
+
+# Y Axis
 frame_y = tk.Frame(control_frame)
 frame_y.pack(side=tk.LEFT, padx=10)
-tk.Label(frame_y, text="Min Y:").pack(side=tk.LEFT)
-entry_min_y = tk.Entry(frame_y, width=5)
-entry_min_y.insert(0, str(current_y_min))
-entry_min_y.pack(side=tk.LEFT, padx=2)
+ui_elements.append({'type': 'frame', 'widget': frame_y})
 
-tk.Label(frame_y, text="Max Y:").pack(side=tk.LEFT)
-entry_max_y = tk.Entry(frame_y, width=5)
-entry_max_y.insert(0, str(current_y_max))
-entry_max_y.pack(side=tk.LEFT, padx=2)
+create_label(frame_y, "Min Y:")
+entry_min_y = create_entry(frame_y, current_y_min)
 
-# Разделитель
-ttk.Separator(control_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
+create_label(frame_y, "Max Y:")
+entry_max_y = create_entry(frame_y, current_y_max)
 
-# Настройки X (Глубина просмотра)
+# Separator (Vertical line)
+sep = tk.Frame(control_frame, width=2, bd=1, relief=tk.SUNKEN)
+sep.pack(side=tk.LEFT, fill=tk.Y, padx=10)
+# No need to track separator color explicitly usually, but let's keep it simple
+
+# X Axis
 frame_x = tk.Frame(control_frame)
 frame_x.pack(side=tk.LEFT, padx=10)
+ui_elements.append({'type': 'frame', 'widget': frame_x})
 
-tk.Label(frame_x, text="Окно просмотра (точек):").pack(side=tk.LEFT)
-entry_width_x = tk.Entry(frame_x, width=8)
-entry_width_x.insert(0, str(current_window_width))
-entry_width_x.pack(side=tk.LEFT, padx=2)
+create_label(frame_x, "Window (points):")
+entry_width_x = create_entry(frame_x, current_window_width, width=8)
 
 
-# Кнопка Применить
+# Functions
 def apply_settings():
     global current_y_min, current_y_max, current_window_width
     try:
@@ -164,50 +211,118 @@ def apply_settings():
         new_width = int(entry_width_x.get())
 
         if new_min >= new_max:
-            print("Ошибка: Min Y должен быть меньше Max Y")
+            print("Error: Min Y must be < Max Y")
             return
         if new_width < 2:
-            print("Ошибка: Ширина X должна быть > 1")
+            print("Error: Window must be > 1")
             return
 
         current_y_min = new_min
         current_y_max = new_max
         current_window_width = new_width
-
-        print(f"Обновлено: Y[{new_min}:{new_max}], Окно={new_width} точек")
+        print(f"Updated: Y[{new_min}:{new_max}], Window={new_width}")
 
     except ValueError:
-        print("Ошибка: Введите корректные числа")
+        print("Error: Invalid numbers")
 
 
-btn_apply = tk.Button(control_frame, text="Применить / Обновить", command=apply_settings, bg="#dddddd",
-                      relief=tk.RAISED)
+btn_apply = tk.Button(control_frame, text="Apply", command=apply_settings, relief=tk.RAISED)
 btn_apply.pack(side=tk.LEFT, padx=15)
+ui_elements.append({'type': 'button', 'widget': btn_apply})
 
-# Индикатор
-lbl_current_temp = tk.Label(control_frame, text="T: --.-- °C", font=("Arial", 16, "bold"), fg="darkred")
+
+# Theme Toggle Button
+def toggle_theme():
+    global is_dark_mode
+    is_dark_mode = not is_dark_mode
+    update_theme_colors()
+
+
+btn_theme = tk.Button(control_frame, text="☀/☾", command=toggle_theme, width=5)
+btn_theme.pack(side=tk.LEFT, padx=15)
+ui_elements.append({'type': 'button', 'widget': btn_theme})
+
+# Current Temp Display
+lbl_current_temp = tk.Label(control_frame, text="T: --.-- °C", font=("Arial", 16, "bold"))
 lbl_current_temp.pack(side=tk.RIGHT, padx=20)
+# We handle this one separately in logic, but track for bg update
+ui_elements.append({'type': 'label_temp', 'widget': lbl_current_temp})
 
-# --- ГРАФИК ---
-# Увеличиваем нижний отступ (bottom=0.2), чтобы влезли вертикальные подписи
+# --- MATPLOTLIB FIGURE ---
 fig = Figure(figsize=(5, 4), dpi=100)
-fig.subplots_adjust(bottom=0.25)
+fig.subplots_adjust(bottom=0.25)  # Space for vertical labels
 ax = fig.add_subplot(111)
 
-ax.grid(True, linestyle='--', alpha=0.7)
-ax.set_ylabel("Температура (°C)")
-line, = ax.plot([], [], 'r.-', linewidth=1.5, markersize=4)  # Добавил точки (markers) для наглядности
+line, = ax.plot([], [], '.-', linewidth=1.5, markersize=4)
 
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.draw()
-canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+canvas_widget = canvas.get_tk_widget()
+canvas_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
 
 
 # ==========================================
-# 4. ЛОГИКА ОБНОВЛЕНИЯ И ОТРИСОВКИ
+# 4. THEME & UPDATE LOGIC
 # ==========================================
+
+def update_theme_colors():
+    """Updates colors of all GUI elements based on is_dark_mode"""
+    t = THEME['dark'] if is_dark_mode else THEME['light']
+
+    # 1. Main Window
+    root.configure(bg=t['bg'])
+    control_frame.configure(bg=t['bg'])
+
+    # 2. Widgets
+    for item in ui_elements:
+        w = item['widget']
+        w_type = item['type']
+
+        if w_type in ['label', 'label_bold', 'frame']:
+            w.configure(bg=t['bg'], fg=t['fg'])
+
+        elif w_type == 'label_temp':
+            # Temp usually has a distinct color, but background must match
+            w.configure(bg=t['bg'], fg=t['fg'])
+
+        elif w_type == 'entry':
+            w.configure(bg=t['entry_bg'], fg=t['entry_fg'], insertbackground=t['fg'])
+
+        elif w_type == 'button':
+            w.configure(bg=t['btn_bg'], fg=t['btn_fg'])
+
+    # 3. Matplotlib Graph
+    fig.patch.set_facecolor(t['plot_bg'])
+    ax.set_facecolor(t['plot_bg'])
+
+    # Axis colors
+    ax.spines['bottom'].set_color(t['axis_color'])
+    ax.spines['top'].set_color(t['axis_color'])
+    ax.spines['right'].set_color(t['axis_color'])
+    ax.spines['left'].set_color(t['axis_color'])
+
+    ax.tick_params(axis='x', colors=t['axis_color'])
+    ax.tick_params(axis='y', colors=t['axis_color'])
+
+    ax.yaxis.label.set_color(t['axis_color'])
+    ax.xaxis.label.set_color(t['axis_color'])
+    ax.title.set_color(t['axis_color'])
+
+    # Line Color
+    line.set_color(t['line_color'])
+    # Update grid color to be visible but subtle
+    grid_color = '#505050' if is_dark_mode else '#b0b0b0'
+    ax.grid(True, linestyle='--', alpha=0.5, color=grid_color)
+
+    canvas.draw()
+
+
+# Initialize theme
+update_theme_colors()
+
+
 def update_graph(frame):
-    # 1. Читаем данные (если есть) и пополняем ОБЩУЮ историю
+    # 1. Read Data
     while serial_connection.in_waiting > 0:
         try:
             raw = serial_connection.readline().decode('utf-8').strip()
@@ -216,72 +331,55 @@ def update_graph(frame):
             now_str = datetime.now().strftime('%H:%M:%S')
             full_time_csv = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
 
-            # Добавляем в БЕЗЛИМИТНЫЙ буфер (историю)
+            # Buffer
             full_history_y.append(val)
             full_history_x.append(now_str)
 
-            # Пишем в файл
+            # CSV
             csv_writer.writerow([full_time_csv, val])
 
+            # Update Label Text
             lbl_current_temp.config(text=f"T: {val:.2f} °C")
 
         except ValueError:
             pass
-        except Exception as e:
-            print(f"Err: {e}")
+        except Exception:
+            pass
 
-    # Принудительная запись на диск (чтобы данные не пропали при сбое)
     csv_file.flush()
 
-    # 2. Формируем "Окно просмотра" (View Window)
-    # Берем срез данных из полной истории на основе настройки `current_window_width`
+    # 2. View Window Logic
     if not full_history_x:
         return line,
 
-    # Если истории меньше, чем ширина окна, показываем всё что есть
     start_index = max(0, len(full_history_x) - current_window_width)
-
     view_x = full_history_x[start_index:]
     view_y = full_history_y[start_index:]
 
-    # Отрисовка линии
     line.set_data(range(len(view_x)), view_y)
 
-    # Настройка осей
-    ax.set_xlim(0, len(view_x) - 1)
+    # 3. Axis Setup
+    ax.set_xlim(0, max(1, len(view_x) - 1))
     ax.set_ylim(current_y_min, current_y_max)
 
-    # 3. УМНЫЕ ПОДПИСИ (Smart Labels)
-    # Задача: показать как можно больше меток времени, но чтобы они не наезжали друг на друга.
-
+    # 4. Smart Labels (X-Axis)
     num_points = len(view_x)
 
     if num_points > 0:
-        # А. Рассчитываем размер шрифта
-        # Чем больше точек, тем меньше шрифт. Минимум 6pt, Максимум 10pt.
-        # Формула эмпирическая.
+        # Font size calculation
         font_size = 10
         if num_points > 30: font_size = 9
         if num_points > 60: font_size = 8
         if num_points > 100: font_size = 7
         if num_points > 150: font_size = 6
 
-        # Б. Рассчитываем шаг (step), чтобы текст не слипся
-        # Допустим, одна вертикальная надпись занимает около 15-20 пикселей ширины (включая отступ)
-        # Ширина графика в пикселях примерно известна (canvas width) или берем примерное кол-во слотов.
-
-        # Примерная емкость экрана (сколько вертикальных надписей влезет в ряд)
-        max_labels_on_screen = 80  # Для шрифта 8pt
-
+        # Step calculation (to avoid overlap)
+        max_labels = 80  # Approximate max vertical labels
         step = 1
-        if num_points > max_labels_on_screen:
-            # Если точек 500, а влезает 80, то шаг = 500 // 80 = 6
-            step = num_points // max_labels_on_screen + 1
+        if num_points > max_labels:
+            step = num_points // max_labels + 1
 
-        # В. Установка тиков
-        # Выбираем индексы для показа
         tick_indices = list(range(0, num_points, step))
-        # Всегда добавляем последнюю точку, чтобы видеть актуальное время
         if (num_points - 1) not in tick_indices:
             tick_indices.append(num_points - 1)
 
@@ -294,10 +392,9 @@ def update_graph(frame):
 
 
 # ==========================================
-# 5. ЗАПУСК
+# 5. START
 # ==========================================
-ani = animation.FuncAnimation(fig, update_graph,
-                              interval=200)  # Чуть медленнее (200мс) для экономии ресурсов при перерисовке текста
+ani = animation.FuncAnimation(fig, update_graph, interval=200)
 
 
 def on_closing():
@@ -308,9 +405,10 @@ def on_closing():
         pass
     root.quit()
     root.destroy()
+    print("App closed.")
 
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
 
-print("GUI запущен...")
+print("GUI Started.")
 tk.mainloop()
