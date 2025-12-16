@@ -144,7 +144,7 @@ csv_file.flush()
 # ==========================================
 
 root = tk.Tk()
-root.title(f"Temperature Monitor PRO ({serial_connection.port})")
+root.title(f"Temperature Monitor by Werdiki ({serial_connection.port})")
 root.geometry("1000x700")
 
 # --- UI ELEMENTS CREATION ---
