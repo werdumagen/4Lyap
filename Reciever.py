@@ -188,7 +188,7 @@ def update(frame):
 
     return line, text_temp
 
-#1
+
 try:
     print("Запуск графика...")
     ani = animation.FuncAnimation(fig, update, interval=100)
