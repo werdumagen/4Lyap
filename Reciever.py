@@ -153,12 +153,15 @@ root.geometry("1000x700")
 control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE)
 control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
-# Helper to create styled labels/entries
-ui_elements = []  # Keep track to update colors later
+# Helper to track widgets for theme updates
+ui_elements = []
+
+# Add the main frame itself to the list to update its background
+ui_elements.append({'type': 'frame', 'widget': control_frame})
 
 
-def create_label(parent, text):
-    lbl = tk.Label(parent, text=text, font=("Arial", 10))
+def create_label(parent, text, font=("Arial", 10)):
+    lbl = tk.Label(parent, text=text, font=font)
     lbl.pack(side=tk.LEFT, padx=5)
     ui_elements.append({'type': 'label', 'widget': lbl})
     return lbl
@@ -173,11 +176,9 @@ def create_entry(parent, default_val, width=5):
 
 
 # Settings UI
-lbl_title = tk.Label(control_frame, text="SETTINGS:", font=("Arial", 10, "bold"))
-lbl_title.pack(side=tk.LEFT, padx=10)
-ui_elements.append({'type': 'label_bold', 'widget': lbl_title})
+lbl_title = create_label(control_frame, "SETTINGS:", font=("Arial", 10, "bold"))
 
-# Y Axis
+# Y Axis Frame
 frame_y = tk.Frame(control_frame)
 frame_y.pack(side=tk.LEFT, padx=10)
 ui_elements.append({'type': 'frame', 'widget': frame_y})
@@ -188,12 +189,12 @@ entry_min_y = create_entry(frame_y, current_y_min)
 create_label(frame_y, "Max Y:")
 entry_max_y = create_entry(frame_y, current_y_max)
 
-# Separator (Vertical line)
+# Separator
 sep = tk.Frame(control_frame, width=2, bd=1, relief=tk.SUNKEN)
 sep.pack(side=tk.LEFT, fill=tk.Y, padx=10)
-# No need to track separator color explicitly usually, but let's keep it simple
+ui_elements.append({'type': 'frame', 'widget': sep})
 
-# X Axis
+# X Axis Frame
 frame_x = tk.Frame(control_frame)
 frame_x.pack(side=tk.LEFT, padx=10)
 ui_elements.append({'type': 'frame', 'widget': frame_x})
@@ -245,7 +246,6 @@ ui_elements.append({'type': 'button', 'widget': btn_theme})
 # Current Temp Display
 lbl_current_temp = tk.Label(control_frame, text="T: --.-- °C", font=("Arial", 16, "bold"))
 lbl_current_temp.pack(side=tk.RIGHT, padx=20)
-# We handle this one separately in logic, but track for bg update
 ui_elements.append({'type': 'label_temp', 'widget': lbl_current_temp})
 
 # --- MATPLOTLIB FIGURE ---
@@ -262,7 +262,7 @@ canvas_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
 
 
 # ==========================================
-# 4. THEME & UPDATE LOGIC
+# 4. THEME & UPDATE LOGIC (FIXED)
 # ==========================================
 
 def update_theme_colors():
@@ -271,18 +271,20 @@ def update_theme_colors():
 
     # 1. Main Window
     root.configure(bg=t['bg'])
-    control_frame.configure(bg=t['bg'])
 
     # 2. Widgets
     for item in ui_elements:
         w = item['widget']
         w_type = item['type']
 
-        if w_type in ['label', 'label_bold', 'frame']:
+        # FIX: 'frame' type only supports 'bg', not 'fg'
+        if w_type == 'frame':
+            w.configure(bg=t['bg'])
+
+        elif w_type in ['label', 'label_bold']:
             w.configure(bg=t['bg'], fg=t['fg'])
 
         elif w_type == 'label_temp':
-            # Temp usually has a distinct color, but background must match
             w.configure(bg=t['bg'], fg=t['fg'])
 
         elif w_type == 'entry':
@@ -310,7 +312,8 @@ def update_theme_colors():
 
     # Line Color
     line.set_color(t['line_color'])
-    # Update grid color to be visible but subtle
+
+    # Update grid color
     grid_color = '#505050' if is_dark_mode else '#b0b0b0'
     ax.grid(True, linestyle='--', alpha=0.5, color=grid_color)
 
