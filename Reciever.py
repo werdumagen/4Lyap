@@ -144,7 +144,7 @@ csv_file.flush()
 # 3. GUI
 # ==========================================
 root = tk.Tk()
-root.title(f"Smooth Monitor PRO ({serial_connection.port})")
+root.title(f"Temperature Monitor by Werdiki ({serial_connection.port})")
 root.geometry("1000x700")
 
 control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE)
