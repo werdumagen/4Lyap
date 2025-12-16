@@ -1,22 +1,31 @@
+import tkinter as tk
+from tkinter import ttk
 import serial
 import serial.tools.list_ports
-import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 import matplotlib.animation as animation
 from datetime import datetime
 import time
 import csv
 import os
 
-# --- НАСТРОЙКИ ---
+# --- ГЛОБАЛЬНЫЕ НАСТРОЙКИ ---
 BAUD_RATE = 9600
-MAX_POINTS = 50  # Ширина окна графика
+MAX_POINTS = 50  # Начальная ширина окна (количество точек)
 MAX_COM_PORT_CHECK = 32
 
+# Глобальные переменные для управления масштабом
+y_min_manual = 20.0
+y_max_manual = 30.0
+auto_scale_y = True  # По умолчанию включен автоскейл
+
 
 # ==========================================
-# 1. БЛОК ПОИСКА ПОРТА (Тот же, что и был)
+# 1. ЛОГИКА ПОИСКА ПОРТА (Без изменений)
 # ==========================================
 def check_port_for_data(port_name):
+    # Используем print для отладки в консоль, пока GUI не запущен
     print(f"   [...] Проверка {port_name}...", end=" ", flush=True)
     ser = None
     try:
@@ -41,7 +50,7 @@ def check_port_for_data(port_name):
                 pass
 
         if valid_floats >= 2:
-            print(f"УСПЕХ! (Найдено чисел: {valid_floats})")
+            print(f"УСПЕХ! (Чисел: {valid_floats})")
             return ser
         else:
             print(f"МУСОР")
@@ -49,7 +58,7 @@ def check_port_for_data(port_name):
             return None
 
     except serial.SerialException:
-        print("ОШИБКА (Занят/Нет)")
+        print("ЗАНЯТ/НЕТ")
         if ser: ser.close()
         return None
     except Exception:
@@ -59,8 +68,7 @@ def check_port_for_data(port_name):
 
 def find_correct_port():
     print("=" * 40)
-    print("ПОИСК АКТИВНОГО COM-ПОРТА")
-    print("=" * 40)
+    print("ПОИСК ДАТЧИКА...")
     system_ports = [p.device for p in serial.tools.list_ports.comports()]
     candidates = []
     candidates.extend(system_ports)
@@ -69,7 +77,6 @@ def find_correct_port():
         if p_name not in candidates:
             candidates.append(p_name)
 
-    # Сортировка и удаление дублей
     final_list = []
     seen = set()
     for x in candidates:
@@ -80,113 +87,194 @@ def find_correct_port():
     for port in final_list:
         found_serial = check_port_for_data(port)
         if found_serial:
-            print("-" * 40)
-            print(f"!!! ДАТЧИК ОБНАРУЖЕН НА {port} !!!")
             return found_serial
     return None
 
 
 # ==========================================
-# 2. ОСНОВНОЙ КОД
+# 2. ПОДГОТОВКА (Порт и CSV)
 # ==========================================
 
-# 1. Ищем порт
 serial_connection = find_correct_port()
 
 if serial_connection is None:
-    print("Датчик не найден. Проверьте Sender.")
-    input("Enter для выхода...")
+    print("Датчик не найден. Запустите Sender и проверьте порты.")
+    input("Нажмите Enter для выхода...")
     exit()
 
-# 2. Создаем CSV файл
-# Генерируем имя файла: ГГГГ-ММ-ДД_ЧЧ-ММ-СС.csv
+# Создание CSV
 start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 filename = f"{start_time_str}.csv"
+print(f"Файл данных: {filename}")
 
-print(f"Создание файла данных: {filename}")
-
-# Открываем файл. newline='' нужен для корректной работы модуля csv в Windows
 csv_file = open(filename, mode='w', newline='', encoding='utf-8')
-csv_writer = csv.writer(csv_file, delimiter=',')  # Используем запятую как разделитель
-
-# Пишем заголовки
+csv_writer = csv.writer(csv_file, delimiter=',')
 csv_writer.writerow(["System Time", "Temperature"])
-csv_file.flush()  # Сохраняем заголовки на диск сразу
+csv_file.flush()
 
-# 3. Настройка графика
+# Данные для графика
 x_data = []
 y_data = []
 
-fig, ax = plt.subplots()
-line, = ax.plot([], [], 'r-', linewidth=2, label='Температура')
-ax.set_title(f'Запись в {filename} (Порт {serial_connection.port})')
-ax.set_xlabel('Время')
-ax.set_ylabel('T (°C)')
-ax.legend()
-ax.grid(True)
-text_temp = ax.text(0.02, 0.95, '', transform=ax.transAxes, fontsize=12, verticalalignment='top')
+# ==========================================
+# 3. GUI ИНТЕРФЕЙС (TKINTER)
+# ==========================================
+
+# Создаем главное окно
+root = tk.Tk()
+root.title(f"Монитор температуры ({serial_connection.port})")
+root.geometry("900x600")
+
+# --- ВЕРХНЯЯ ПАНЕЛЬ НАСТРОЕК ---
+control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE)
+control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+
+# Элементы управления
+lbl_settings = tk.Label(control_frame, text="Настройки осей:", font=("Arial", 10, "bold"))
+lbl_settings.pack(side=tk.LEFT, padx=5)
+
+# Чекбокс авто-масштаба
+var_autoscale = tk.BooleanVar(value=True)
+chk_auto = tk.Checkbutton(control_frame, text="Авто-Y", variable=var_autoscale)
+chk_auto.pack(side=tk.LEFT, padx=10)
+
+# Поля ручного ввода Y
+lbl_min = tk.Label(control_frame, text="Min Y:")
+lbl_min.pack(side=tk.LEFT)
+entry_min = tk.Entry(control_frame, width=5)
+entry_min.insert(0, "20")
+entry_min.pack(side=tk.LEFT, padx=2)
+
+lbl_max = tk.Label(control_frame, text="Max Y:")
+lbl_max.pack(side=tk.LEFT)
+entry_max = tk.Entry(control_frame, width=5)
+entry_max.insert(0, "35")
+entry_max.pack(side=tk.LEFT, padx=2)
 
 
-def update(frame):
-    # Читаем данные из порта
+# Кнопка применения
+def apply_settings():
+    global y_min_manual, y_max_manual, auto_scale_y
+    auto_scale_y = var_autoscale.get()
+    try:
+        y_min_manual = float(entry_min.get())
+        y_max_manual = float(entry_max.get())
+    except ValueError:
+        print("Ошибка: введите числа в поля Min/Max")
+
+
+btn_apply = tk.Button(control_frame, text="Применить", command=apply_settings, bg="#dddddd")
+btn_apply.pack(side=tk.LEFT, padx=10)
+
+# Текущее значение (Label)
+lbl_current_temp = tk.Label(control_frame, text="T: --.-- °C", font=("Arial", 14, "bold"), fg="blue")
+lbl_current_temp.pack(side=tk.RIGHT, padx=20)
+
+# --- ГРАФИК (Embedding Matplotlib) ---
+# Создаем фигуру Matplotlib (без pyplot интерфейса)
+fig = Figure(figsize=(5, 4), dpi=100)
+ax = fig.add_subplot(111)
+
+# Настройка стиля
+ax.grid(True, linestyle='--', alpha=0.7)
+ax.set_ylabel("Температура (°C)")
+ax.set_xlabel("Время")
+line, = ax.plot([], [], 'r-', linewidth=2)
+
+# Встраиваем фигуру в Tkinter
+canvas = FigureCanvasTkAgg(fig, master=root)
+canvas.draw()
+canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+
+
+# ВАЖНО: Мы НЕ добавляем NavigationToolbar2Tk, чтобы убрать кнопки снизу.
+
+# ==========================================
+# 4. ФУНКЦИЯ ОБНОВЛЕНИЯ
+# ==========================================
+def update_graph(frame):
+    # Чтение данных
     if serial_connection.in_waiting > 0:
         try:
             raw = serial_connection.readline().decode('utf-8').strip()
             val = float(raw)
 
-            # Получаем текущее время
-            current_time = datetime.now().strftime('%H:%M:%S')
-            full_time_for_csv = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]  # Время с миллисекундами
+            # Время
+            now_str = datetime.now().strftime('%H:%M:%S')
+            full_time_csv = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
 
-            # 1. Обновляем списки для графика
+            # Данные в память
             y_data.append(val)
-            x_data.append(current_time)
+            x_data.append(now_str)
 
             if len(y_data) > MAX_POINTS:
                 y_data.pop(0)
                 x_data.pop(0)
 
-            # 2. ПИШЕМ В ФАЙЛ
-            # Пишем строку: [Время, Температура]
-            csv_writer.writerow([full_time_for_csv, val])
-
-            # ВАЖНО: flush() заставляет Python немедленно записать данные на диск,
-            # а не держать их в памяти. Так данные сохранятся даже при вылете программы.
+            # CSV
+            csv_writer.writerow([full_time_csv, val])
             csv_file.flush()
 
-            # Обновляем текст на графике
-            text_temp.set_text(f"{val}°C")
+            # Обновляем текст в GUI (справа сверху)
+            lbl_current_temp.config(text=f"T: {val:.2f} °C")
 
         except ValueError:
             pass
         except Exception as e:
-            print(f"Ошибка чтения/записи: {e}")
+            print(f"Err: {e}")
 
-    # Перерисовка графика
+    # Отрисовка линии
     line.set_data(range(len(y_data)), y_data)
-    ax.set_xlim(0, MAX_POINTS)
-    if y_data:
-        ax.set_ylim(min(y_data) - 2, max(y_data) + 2)
-    else:
-        ax.set_ylim(0, 50)
 
+    # Настройка осей
+    ax.set_xlim(0, MAX_POINTS)
+
+    # Логика масштабирования Y
+    if auto_scale_y:
+        if y_data:
+            curr_min, curr_max = min(y_data), max(y_data)
+            margin = (curr_max - curr_min) * 0.1 if curr_max != curr_min else 1.0
+            ax.set_ylim(curr_min - margin, curr_max + margin)
+        else:
+            ax.set_ylim(0, 50)
+    else:
+        # Ручной режим (берем значения из переменных)
+        ax.set_ylim(y_min_manual, y_max_manual)
+
+    # Подписи оси X
     ax.set_xticks(range(len(x_data)))
     ax.set_xticklabels(x_data, rotation=45, ha='right')
 
+    # Прореживание меток
     for i, label in enumerate(ax.xaxis.get_ticklabels()):
         if i % 5 != 0 and i != len(x_data) - 1:
             label.set_visible(False)
 
-    return line, text_temp
+    return line,
 
 
-try:
-    print("Запись данных началась. Закройте окно графика для остановки.")
-    ani = animation.FuncAnimation(fig, update, interval=100)
-    plt.tight_layout()
-    plt.show()
-finally:
-    # Этот блок выполнится при закрытии окна
-    serial_connection.close()
-    csv_file.close()  # Закрываем файл корректно
-    print(f"\nРабота завершена. Данные сохранены в: {os.path.abspath(filename)}")
+# ==========================================
+# 5. ЗАПУСК
+# ==========================================
+
+# Анимация
+ani = animation.FuncAnimation(fig, update_graph, interval=100)
+
+
+# Функция корректного закрытия
+def on_closing():
+    print("\nЗавершение работы...")
+    try:
+        serial_connection.close()
+        csv_file.close()
+        print(f"Файл сохранен: {os.path.abspath(filename)}")
+    except:
+        pass
+    root.quit()
+    root.destroy()
+
+
+root.protocol("WM_DELETE_WINDOW", on_closing)
+
+print("Запуск графического интерфейса...")
+tk.mainloop()
