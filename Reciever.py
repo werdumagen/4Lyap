@@ -51,6 +51,51 @@ THEME = {
 
 
 # ==========================================
+# 0. SPLASH SCREEN
+# ==========================================
+def show_splash():
+    """Displays logo.png for 3 seconds before starting the app."""
+    if not os.path.exists("logo.png"):
+        print("Splash info: 'logo.png' not found. Skipping.")
+        return
+
+    try:
+        splash_root = tk.Tk()
+        splash_root.overrideredirect(True)  # No window borders/controls
+
+        # Load Image
+        img = tk.PhotoImage(file="logo.png")
+        w = img.width()
+        h = img.height()
+
+        # Center on screen
+        ws = splash_root.winfo_screenwidth()
+        hs = splash_root.winfo_screenheight()
+        x = (ws // 2) - (w // 2)
+        y = (hs // 2) - (h // 2)
+        splash_root.geometry(f"{w}x{h}+{x}+{y}")
+
+        # Label with image
+        label = tk.Label(splash_root, image=img, borderwidth=0)
+        label.pack()
+
+        # Destroy after 3000ms (3 seconds)
+        splash_root.after(3000, splash_root.destroy)
+
+        splash_root.mainloop()
+    except Exception as e:
+        print(f"Splash error: {e}")
+        try:
+            splash_root.destroy()
+        except:
+            pass
+
+
+# Call splash before anything else
+show_splash()
+
+
+# ==========================================
 # 1. PORT SCANNING
 # ==========================================
 def check_port_for_data(port_name):
