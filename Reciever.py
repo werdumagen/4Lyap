@@ -22,7 +22,7 @@ log_filename = f"log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
 # Configure logging: writes to both File and Console
 logging.basicConfig(
-    level=logging.DEBUG,  # Capture everything (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    level=logging.DEBUG,  # Capture everything
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_filename, encoding='utf-8'),
@@ -121,10 +121,9 @@ show_splash()
 
 
 # ==========================================
-# 2. PORT SCANNING
+# 2. PORT SCANNING & DIAGNOSTICS
 # ==========================================
 def check_port_for_data(port_name):
-    # logging.debug(f"Checking port: {port_name}...") # Too verbose for main log? keeping it normal print in console via log
     print(f"   [...] Checking {port_name}...", end=" ", flush=True)
     ser = None
     try:
@@ -161,8 +160,6 @@ def check_port_for_data(port_name):
 
     except serial.SerialException:
         print("BUSY/NONE")
-        # Don't log every "busy" port as ERROR, just DEBUG or INFO to keep log clean
-        # logging.debug(f"Port {port_name} is busy or does not exist.")
         if ser: ser.close()
         return None
     except Exception as e:
@@ -171,42 +168,88 @@ def check_port_for_data(port_name):
         return None
 
 
+def dump_all_ports_raw_data(candidates):
+    """Fallback: Connect to all candidates and log raw data for debugging."""
+    logging.warning("=== FALLBACK: DUMPING RAW DATA FROM ALL PORTS ===")
+    print("\n--- DIAGNOSTIC MODE: LOGGING RAW DATA ---")
+
+    for port in candidates:
+        logging.info(f"[RAW DUMP] Connecting to {port}...")
+        try:
+            ser = serial.Serial(port, BAUD_RATE, timeout=2.0)
+            time.sleep(1.5)  # Wait for data
+
+            if ser.in_waiting > 0:
+                raw_lines = []
+                for _ in range(5):  # Read 5 lines max
+                    line = ser.readline()
+                    raw_lines.append(line)
+
+                logging.info(f"[RAW DUMP] Data from {port}: {raw_lines}")
+                print(f"   -> {port}: Data logged.")
+            else:
+                logging.info(f"[RAW DUMP] {port} is open but silent (no data).")
+                print(f"   -> {port}: No data.")
+
+            ser.close()
+        except Exception as e:
+            logging.info(f"[RAW DUMP] Could not open {port}: {e}")
+            print(f"   -> {port}: Access denied/Error.")
+
+    logging.info("=== RAW DUMP FINISHED ===")
+
+
 def find_correct_port():
     logging.info("Starting port scan procedure...")
-    print("=" * 40)
-    print("SEARCHING FOR SENSOR...")
-    print("=" * 40)
 
-    try:
-        system_ports = [p.device for p in serial.tools.list_ports.comports()]
-        logging.info(f"System reported ports: {system_ports}")
+    # Generate candidate list once
+    system_ports = [p.device for p in serial.tools.list_ports.comports()]
+    logging.info(f"System reported ports: {system_ports}")
 
-        candidates = []
-        candidates.extend(system_ports)
-        for i in range(1, MAX_COM_PORT_CHECK + 1):
-            p_name = f"COM{i}"
-            if p_name not in candidates:
-                candidates.append(p_name)
+    candidates = []
+    candidates.extend(system_ports)
+    for i in range(1, MAX_COM_PORT_CHECK + 1):
+        p_name = f"COM{i}"
+        if p_name not in candidates:
+            candidates.append(p_name)
 
-        final_list = []
-        seen = set()
-        for x in candidates:
-            if x not in seen:
-                final_list.append(x)
-                seen.add(x)
+    # Unique sorted candidates
+    final_list = []
+    seen = set()
+    for x in candidates:
+        if x not in seen:
+            final_list.append(x)
+            seen.add(x)
 
-        logging.info(f"Candidate ports list prepared ({len(final_list)} ports).")
+    logging.info(f"Candidate ports list prepared ({len(final_list)} ports).")
+
+    # --- FEATURE: RETRY LOGIC (2 Attempts) ---
+    max_scan_attempts = 2
+
+    for attempt in range(1, max_scan_attempts + 1):
+        logging.info(f"--- SCAN ATTEMPT {attempt}/{max_scan_attempts} ---")
+        print(f"\nSEARCHING FOR SENSOR (Attempt {attempt})...")
+        print("=" * 40)
 
         for port in final_list:
             found_serial = check_port_for_data(port)
             if found_serial:
-                logging.info(f"Sensor found and connected on {port}.")
+                logging.info(f"Sensor found on {port} during attempt {attempt}.")
                 return found_serial
 
-    except Exception as e:
-        logging.critical(f"Critical error during port scanning: {e}", exc_info=True)
+        logging.warning(f"Scan attempt {attempt} failed. No sensor found.")
+        if attempt < max_scan_attempts:
+            print("   -> Retrying scan...")
+            time.sleep(1)  # Pause before retry
 
-    logging.warning("No suitable port found after scanning all candidates.")
+    # --- FEATURE: FALLBACK LOGGING ---
+    # If we are here, both attempts failed.
+    logging.error("All automatic scan attempts failed.")
+    print("\n! AUTOMATIC SEARCH FAILED !")
+    print("Running diagnostics (checking for ANY data)...")
+
+    dump_all_ports_raw_data(final_list)
+
     return None
 
 
@@ -216,8 +259,9 @@ def find_correct_port():
 serial_connection = find_correct_port()
 
 if serial_connection is None:
-    logging.error("Sensor not found. Application exiting.")
+    logging.critical("Sensor not found after retries and diagnostics. Exiting.")
     print("\nError: Sensor not found.")
+    print("Check the log file for raw data dump from other ports.")
     input("Press Enter to exit...")
     exit()
 
