@@ -136,21 +136,27 @@ def check_port_for_data(port_name):
 def auto_find_port():
     logging.info("Starting Auto-Discovery...")
 
-    # 1. Get List
+    # 1. Get List (System + Manual Range)
     candidates = [p.device for p in serial.tools.list_ports.comports()]
-    # Add manual range just in case
     for i in range(1, MAX_COM_PORT_CHECK + 1):
         p = f"COM{i}"
         if p not in candidates: candidates.append(p)
 
-    # Deduplicate
-    candidates = sorted(list(set(candidates)), key=lambda x: (len(x), x))
+    # Deduplicate and sort
+    def sort_key(x):
+        if x.startswith("COM") and x[3:].isdigit(): return int(x[3:])
+        return x
+
+    candidates = sorted(list(set(candidates)), key=sort_key)
 
     # 2. Try twice
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         logging.info(f"Scan attempt {attempt}/{max_attempts}")
         for port in candidates:
+            # Skip checking obviously empty high ports to save time, unless system reported them
+            # but for virtual ports we must check.
+            # Optimization: check only if it opens
             ser = check_port_for_data(port)
             if ser:
                 logging.info(f"Found on {port}")
@@ -179,7 +185,7 @@ try:
     logging.info(f"CSV created: {csv_filename}")
 except Exception as e:
     logging.error(f"CSV Error: {e}")
-    # We continue even if CSV fails, just logging won't work
+    # We continue even if CSV fails
 
 # ==========================================
 # 4. GUI IMPLEMENTATION
@@ -221,15 +227,33 @@ frame_port.pack(side=tk.LEFT, padx=5)
 ui_elements.append({'type': 'frame', 'widget': frame_port})
 
 create_label(frame_port, "Port:", bold=True)
-available_ports = [p.device for p in serial.tools.list_ports.comports()]
-if not available_ports: available_ports = ["COM1"]
 
-combo_ports = ttk.Combobox(frame_port, values=available_ports, width=8)
+# --- FIX: Populate ALL ports (COM1-COM32) + System Ports ---
+sys_ports = [p.device for p in serial.tools.list_ports.comports()]
+manual_ports = [f"COM{i}" for i in range(1, 33)]
+all_available_ports = list(set(sys_ports + manual_ports))
+
+
+# Sort nicely (COM1, COM2... COM10)
+def port_sort(x):
+    if x.startswith("COM") and x[3:].isdigit(): return int(x[3:])
+    return x
+
+
+all_available_ports.sort(key=port_sort)
+
+combo_ports = ttk.Combobox(frame_port, values=all_available_ports, width=8)
 combo_ports.pack(side=tk.LEFT, padx=2)
+
+# Select current port or default
 if serial_connection:
     combo_ports.set(serial_connection.port)
-elif available_ports:
-    combo_ports.current(0)
+else:
+    # Try to set COM1 or first available
+    if "COM1" in all_available_ports:
+        combo_ports.set("COM1")
+    elif all_available_ports:
+        combo_ports.current(0)
 
 
 def manual_connect():
@@ -337,8 +361,6 @@ ui_elements.append({'type': 'frame', 'widget': status_frame})
 lbl_status = tk.Label(status_frame, text="Status: Waiting...", font=("Consolas", 9), anchor="w")
 lbl_status.pack(side=tk.LEFT, fill=tk.X, padx=5)
 
-
-# Don't add to ui_elements standard list because text color changes dynamically
 
 # ==========================================
 # 5. THEME ENGINE
