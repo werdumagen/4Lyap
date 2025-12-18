@@ -17,12 +17,10 @@ import sys
 # ==========================================
 # 0. LOGGING SETUP
 # ==========================================
-# Generate log filename based on start time
 log_filename = f"log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
-# Configure logging: writes to both File and Console
 logging.basicConfig(
-    level=logging.DEBUG,  # Capture everything
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_filename, encoding='utf-8'),
@@ -42,6 +40,9 @@ current_y_min = 15.0
 current_y_max = 35.0
 current_window_width = 50
 
+# Global Connection Object
+serial_connection = None
+
 # Smoothing State
 is_smooth_enabled = True
 
@@ -59,14 +60,16 @@ THEME = {
         'entry_bg': '#404040', 'entry_fg': '#ffffff',
         'btn_bg': '#505050', 'btn_fg': '#ffffff',
         'plot_bg': '#2b2b2b', 'axis_color': '#ffffff',
-        'line_color': '#FFFF00'
+        'line_color': '#FFFF00',
+        'status_ok': '#00FF00', 'status_err': '#FF5555'
     },
     'light': {
         'bg': '#f0f0f0', 'fg': '#000000',
         'entry_bg': '#ffffff', 'entry_fg': '#000000',
         'btn_bg': '#dddddd', 'btn_fg': '#000000',
         'plot_bg': '#f0f0f0', 'axis_color': '#000000',
-        'line_color': '#FF0000'
+        'line_color': '#FF0000',
+        'status_ok': '#008800', 'status_err': '#FF0000'
     }
 }
 
@@ -75,53 +78,27 @@ THEME = {
 # 1. SPLASH SCREEN
 # ==========================================
 def show_splash():
-    """Displays logo.png for 3 seconds before starting the app."""
-    logging.info("Attempting to show splash screen...")
     if not os.path.exists("logo.png"):
-        logging.warning("Splash warning: 'logo.png' not found. Skipping splash screen.")
         return
-
     try:
         splash_root = tk.Tk()
-        splash_root.overrideredirect(True)  # No window borders/controls
-
-        # Load Image
+        splash_root.overrideredirect(True)
         img = tk.PhotoImage(file="logo.png")
-        w = img.width()
-        h = img.height()
-
-        # Center on screen
-        ws = splash_root.winfo_screenwidth()
-        hs = splash_root.winfo_screenheight()
-        x = (ws // 2) - (w // 2)
-        y = (hs // 2) - (h // 2)
-        splash_root.geometry(f"{w}x{h}+{x}+{y}")
-
-        # Label with image
-        label = tk.Label(splash_root, image=img, borderwidth=0)
-        label.pack()
-
-        logging.info("Splash screen displayed.")
-
-        # Destroy after 3000ms (3 seconds)
+        w, h = img.width(), img.height()
+        ws, hs = splash_root.winfo_screenwidth(), splash_root.winfo_screenheight()
+        splash_root.geometry(f"{w}x{h}+{(ws // 2) - (w // 2)}+{(hs // 2) - (h // 2)}")
+        tk.Label(splash_root, image=img, borderwidth=0).pack()
         splash_root.after(3000, splash_root.destroy)
-
         splash_root.mainloop()
-        logging.info("Splash screen closed.")
-    except Exception as e:
-        logging.error(f"Error displaying splash screen: {e}", exc_info=True)
-        try:
-            splash_root.destroy()
-        except:
-            pass
+    except Exception:
+        pass
 
 
-# Call splash
 show_splash()
 
 
 # ==========================================
-# 2. PORT SCANNING & DIAGNOSTICS
+# 2. PORT SCANNING LOGIC
 # ==========================================
 def check_port_for_data(port_name):
     print(f"   [...] Checking {port_name}...", end=" ", flush=True)
@@ -133,427 +110,356 @@ def check_port_for_data(port_name):
 
         if ser.in_waiting == 0:
             print("EMPTY")
-            logging.debug(f"Port {port_name} opened but no data received (EMPTY).")
             ser.close()
             return None
 
-        attempts = 4
-        valid_floats = 0
-        for _ in range(attempts):
+        for _ in range(4):
             try:
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if not line: continue
-                float(line)
-                valid_floats += 1
+                float(line)  # Try to convert
+                # If success
+                print(f"SUCCESS!")
+                return ser
             except ValueError:
                 pass
 
-        if valid_floats >= 2:
-            print(f"SUCCESS! (Found {valid_floats} numbers)")
-            logging.info(f"Valid data stream detected on {port_name}.")
-            return ser
-        else:
-            print(f"GARBAGE")
-            logging.debug(f"Port {port_name} contains garbage data.")
-            ser.close()
-            return None
-
-    except serial.SerialException:
-        print("BUSY/NONE")
-        if ser: ser.close()
+        print("GARBAGE")
+        ser.close()
         return None
-    except Exception as e:
-        logging.error(f"Unexpected error checking port {port_name}: {e}")
+    except Exception:
+        print("BUSY/ERR")
         if ser: ser.close()
         return None
 
 
-def dump_all_ports_raw_data(candidates):
-    """Fallback: Connect to all candidates and log raw data for debugging."""
-    logging.warning("=== FALLBACK: DUMPING RAW DATA FROM ALL PORTS ===")
-    print("\n--- DIAGNOSTIC MODE: LOGGING RAW DATA ---")
+def auto_find_port():
+    logging.info("Starting Auto-Discovery...")
 
-    for port in candidates:
-        logging.info(f"[RAW DUMP] Connecting to {port}...")
-        try:
-            ser = serial.Serial(port, BAUD_RATE, timeout=2.0)
-            time.sleep(1.5)  # Wait for data
-
-            if ser.in_waiting > 0:
-                raw_lines = []
-                for _ in range(5):  # Read 5 lines max
-                    line = ser.readline()
-                    raw_lines.append(line)
-
-                logging.info(f"[RAW DUMP] Data from {port}: {raw_lines}")
-                print(f"   -> {port}: Data logged.")
-            else:
-                logging.info(f"[RAW DUMP] {port} is open but silent (no data).")
-                print(f"   -> {port}: No data.")
-
-            ser.close()
-        except Exception as e:
-            logging.info(f"[RAW DUMP] Could not open {port}: {e}")
-            print(f"   -> {port}: Access denied/Error.")
-
-    logging.info("=== RAW DUMP FINISHED ===")
-
-
-def find_correct_port():
-    logging.info("Starting port scan procedure...")
-
-    # Generate candidate list once
-    system_ports = [p.device for p in serial.tools.list_ports.comports()]
-    logging.info(f"System reported ports: {system_ports}")
-
-    candidates = []
-    candidates.extend(system_ports)
+    # 1. Get List
+    candidates = [p.device for p in serial.tools.list_ports.comports()]
+    # Add manual range just in case
     for i in range(1, MAX_COM_PORT_CHECK + 1):
-        p_name = f"COM{i}"
-        if p_name not in candidates:
-            candidates.append(p_name)
+        p = f"COM{i}"
+        if p not in candidates: candidates.append(p)
 
-    # Unique sorted candidates
-    final_list = []
-    seen = set()
-    for x in candidates:
-        if x not in seen:
-            final_list.append(x)
-            seen.add(x)
+    # Deduplicate
+    candidates = sorted(list(set(candidates)), key=lambda x: (len(x), x))
 
-    logging.info(f"Candidate ports list prepared ({len(final_list)} ports).")
+    # 2. Try twice
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        logging.info(f"Scan attempt {attempt}/{max_attempts}")
+        for port in candidates:
+            ser = check_port_for_data(port)
+            if ser:
+                logging.info(f"Found on {port}")
+                return ser
+        if attempt < max_attempts:
+            time.sleep(0.5)
 
-    # --- FEATURE: RETRY LOGIC (2 Attempts) ---
-    max_scan_attempts = 2
-
-    for attempt in range(1, max_scan_attempts + 1):
-        logging.info(f"--- SCAN ATTEMPT {attempt}/{max_scan_attempts} ---")
-        print(f"\nSEARCHING FOR SENSOR (Attempt {attempt})...")
-        print("=" * 40)
-
-        for port in final_list:
-            found_serial = check_port_for_data(port)
-            if found_serial:
-                logging.info(f"Sensor found on {port} during attempt {attempt}.")
-                return found_serial
-
-        logging.warning(f"Scan attempt {attempt} failed. No sensor found.")
-        if attempt < max_scan_attempts:
-            print("   -> Retrying scan...")
-            time.sleep(1)  # Pause before retry
-
-    # --- FEATURE: FALLBACK LOGGING ---
-    # If we are here, both attempts failed.
-    logging.error("All automatic scan attempts failed.")
-    print("\n! AUTOMATIC SEARCH FAILED !")
-    print("Running diagnostics (checking for ANY data)...")
-
-    dump_all_ports_raw_data(final_list)
-
+    logging.warning("Auto-discovery failed. Opening GUI anyway.")
     return None
 
 
 # ==========================================
 # 3. SETUP
 # ==========================================
-serial_connection = find_correct_port()
+# Try to find port, but DON'T EXIT if failed
+serial_connection = auto_find_port()
 
-if serial_connection is None:
-    logging.critical("Sensor not found after retries and diagnostics. Exiting.")
-    print("\nError: Sensor not found.")
-    print("Check the log file for raw data dump from other ports.")
-    input("Press Enter to exit...")
-    exit()
-
-# CSV Setup
+# Create CSV (Session Log)
+start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+csv_filename = f"{start_time_str}.csv"
 try:
-    start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"{start_time_str}.csv"
-    logging.info(f"Creating CSV file: {filename}")
-    print(f"\nLogging to file: {filename}")
-
-    csv_file = open(filename, mode='w', newline='', encoding='utf-8')
+    csv_file = open(csv_filename, mode='w', newline='', encoding='utf-8')
     csv_writer = csv.writer(csv_file, delimiter=',')
     csv_writer.writerow(["System Time", "Temperature"])
     csv_file.flush()
-    logging.info("CSV file created and header written.")
+    logging.info(f"CSV created: {csv_filename}")
 except Exception as e:
-    logging.critical(f"Failed to create/write CSV file: {e}", exc_info=True)
-    exit()
+    logging.error(f"CSV Error: {e}")
+    # We continue even if CSV fails, just logging won't work
 
 # ==========================================
-# 4. GUI
+# 4. GUI IMPLEMENTATION
 # ==========================================
-try:
-    logging.info("Initializing GUI...")
-    root = tk.Tk()
-    root.title(f"Temperature Monitor by Werdiki ({serial_connection.port})")
-    root.geometry("1000x700")
+root = tk.Tk()
+title_port = serial_connection.port if serial_connection else "NO CONNECTION"
+root.title(f"TermoReciever - {title_port}")
+root.geometry("1000x750")
 
-    control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE)
-    control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
-
-    ui_elements = []
-    ui_elements.append({'type': 'frame', 'widget': control_frame})
+# --- UI Collections ---
+ui_elements = []  # For theme updates
 
 
-    def create_label(parent, text, font=("Arial", 10)):
-        lbl = tk.Label(parent, text=text, font=font)
-        lbl.pack(side=tk.LEFT, padx=5)
-        ui_elements.append({'type': 'label', 'widget': lbl})
-        return lbl
+# Helper functions
+def create_label(parent, text, font=("Arial", 10), bold=False):
+    f = ("Arial", 10, "bold") if bold else ("Arial", 10)
+    lbl = tk.Label(parent, text=text, font=f)
+    lbl.pack(side=tk.LEFT, padx=5)
+    ui_elements.append({'type': 'label', 'widget': lbl})
+    return lbl
 
 
-    def create_entry(parent, default_val, width=5):
-        ent = tk.Entry(parent, width=width)
-        ent.insert(0, str(default_val))
-        ent.pack(side=tk.LEFT, padx=2)
-        ui_elements.append({'type': 'entry', 'widget': ent})
-        return ent
+def create_entry(parent, default_val, width=5):
+    ent = tk.Entry(parent, width=width)
+    ent.insert(0, str(default_val))
+    ent.pack(side=tk.LEFT, padx=2)
+    ui_elements.append({'type': 'entry', 'widget': ent})
+    return ent
 
 
-    # Settings UI
-    create_label(control_frame, "SETTINGS:", font=("Arial", 10, "bold"))
+# --- 1. TOP CONTROL PANEL ---
+control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE)
+control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+ui_elements.append({'type': 'frame', 'widget': control_frame})
 
-    # Y Axis
-    frame_y = tk.Frame(control_frame)
-    frame_y.pack(side=tk.LEFT, padx=10)
-    ui_elements.append({'type': 'frame', 'widget': frame_y})
+# A. Port Selection Section
+frame_port = tk.Frame(control_frame)
+frame_port.pack(side=tk.LEFT, padx=5)
+ui_elements.append({'type': 'frame', 'widget': frame_port})
 
-    create_label(frame_y, "Min Y:")
-    entry_min_y = create_entry(frame_y, current_y_min)
-    create_label(frame_y, "Max Y:")
-    entry_max_y = create_entry(frame_y, current_y_max)
+create_label(frame_port, "Port:", bold=True)
+available_ports = [p.device for p in serial.tools.list_ports.comports()]
+if not available_ports: available_ports = ["COM1"]
 
-    # Separator
-    sep = tk.Frame(control_frame, width=2, bd=1, relief=tk.SUNKEN)
-    sep.pack(side=tk.LEFT, fill=tk.Y, padx=10)
-    ui_elements.append({'type': 'frame', 'widget': sep})
-
-    # X Axis
-    frame_x = tk.Frame(control_frame)
-    frame_x.pack(side=tk.LEFT, padx=10)
-    ui_elements.append({'type': 'frame', 'widget': frame_x})
-
-    create_label(frame_x, "Window:")
-    entry_width_x = create_entry(frame_x, current_window_width, width=6)
+combo_ports = ttk.Combobox(frame_port, values=available_ports, width=8)
+combo_ports.pack(side=tk.LEFT, padx=2)
+if serial_connection:
+    combo_ports.set(serial_connection.port)
+elif available_ports:
+    combo_ports.current(0)
 
 
-    # Functions
-    def apply_settings():
-        global current_y_min, current_y_max, current_window_width
-        logging.info("Applying settings...")
-        try:
-            new_min = float(entry_min_y.get())
-            new_max = float(entry_max_y.get())
-            new_width = int(entry_width_x.get())
+def manual_connect():
+    global serial_connection
+    selected_port = combo_ports.get()
+    logging.info(f"Manual connection requested to {selected_port}")
 
-            if new_min >= new_max:
-                logging.warning(f"Invalid Y settings: Min ({new_min}) >= Max ({new_max}).")
-                return
-            if new_width < 2:
-                logging.warning(f"Invalid Window width: {new_width} (must be >= 2).")
-                return
+    # Close old
+    if serial_connection and serial_connection.is_open:
+        serial_connection.close()
 
-            current_y_min = new_min
-            current_y_max = new_max
-            current_window_width = new_width
-            print(f"Updated: Y[{new_min}:{new_max}], Window={new_width}")
-            logging.info(f"Settings updated: Y=[{new_min}, {new_max}], Window={new_width}")
-        except ValueError as e:
-            logging.error(f"Invalid input in settings: {e}")
-        except Exception as e:
-            logging.error(f"Unknown error applying settings: {e}", exc_info=True)
+    try:
+        serial_connection = serial.Serial(selected_port, BAUD_RATE, timeout=1.5)
+        # Reset buffers to clear old garbage
+        serial_connection.reset_input_buffer()
+        logging.info(f"Connected to {selected_port}")
+        root.title(f"TermoReciever - {selected_port}")
+        lbl_status.config(text=f"Status: Connected to {selected_port}", fg="green")
+    except Exception as e:
+        logging.error(f"Connection failed: {e}")
+        lbl_status.config(text=f"Error: {e}", fg="red")
+        serial_connection = None
+        root.title("TermoReciever - Disconnected")
 
 
-    btn_apply = tk.Button(control_frame, text="Apply", command=apply_settings, relief=tk.RAISED)
-    btn_apply.pack(side=tk.LEFT, padx=15)
-    ui_elements.append({'type': 'button', 'widget': btn_apply})
+btn_connect = tk.Button(frame_port, text="Connect", command=manual_connect)
+btn_connect.pack(side=tk.LEFT, padx=5)
+ui_elements.append({'type': 'button', 'widget': btn_connect})
+
+# Separator
+tk.Frame(control_frame, width=2, bd=1, relief=tk.SUNKEN).pack(side=tk.LEFT, fill=tk.Y, padx=10)
+
+# B. Settings Section
+create_label(control_frame, "Y-Axis:", bold=True)
+entry_min_y = create_entry(control_frame, current_y_min)
+create_label(control_frame, "-")
+entry_max_y = create_entry(control_frame, current_y_max)
+
+tk.Frame(control_frame, width=10).pack(side=tk.LEFT)  # spacer
+
+create_label(control_frame, "Window:", bold=True)
+entry_width_x = create_entry(control_frame, current_window_width, width=6)
 
 
-    # --- SMOOTH TOGGLE ---
-    def toggle_smooth():
-        global is_smooth_enabled
-        is_smooth_enabled = not is_smooth_enabled
-        logging.info(f"Smoothing toggled to: {is_smooth_enabled}")
-        if is_smooth_enabled:
-            btn_smooth.config(text="Smooth: ON", relief=tk.SUNKEN)
-        else:
-            btn_smooth.config(text="Smooth: OFF", relief=tk.RAISED)
+def apply_settings():
+    global current_y_min, current_y_max, current_window_width
+    try:
+        new_min = float(entry_min_y.get())
+        new_max = float(entry_max_y.get())
+        new_width = int(entry_width_x.get())
+        if new_min >= new_max: return
+        if new_width < 2: return
+        current_y_min, current_y_max, current_window_width = new_min, new_max, new_width
+        logging.info("Settings applied.")
+    except:
+        pass
 
 
-    btn_smooth = tk.Button(control_frame, text="Smooth: ON", command=toggle_smooth, width=10, relief=tk.SUNKEN)
-    btn_smooth.pack(side=tk.LEFT, padx=10)
-    ui_elements.append({'type': 'button', 'widget': btn_smooth})
+btn_apply = tk.Button(control_frame, text="Apply", command=apply_settings)
+btn_apply.pack(side=tk.LEFT, padx=15)
+ui_elements.append({'type': 'button', 'widget': btn_apply})
 
 
-    # Theme Toggle
-    def toggle_theme():
-        global is_dark_mode
-        is_dark_mode = not is_dark_mode
-        logging.info(f"Theme toggled. Dark mode: {is_dark_mode}")
-        update_theme_colors()
+# C. Toggles
+def toggle_smooth():
+    global is_smooth_enabled
+    is_smooth_enabled = not is_smooth_enabled
+    btn_smooth.config(relief=tk.SUNKEN if is_smooth_enabled else tk.RAISED)
 
 
-    btn_theme = tk.Button(control_frame, text="☀/☾", command=toggle_theme, width=5)
-    btn_theme.pack(side=tk.LEFT, padx=10)
-    ui_elements.append({'type': 'button', 'widget': btn_theme})
+btn_smooth = tk.Button(control_frame, text="Smooth", command=toggle_smooth, relief=tk.SUNKEN)
+btn_smooth.pack(side=tk.LEFT, padx=10)
+ui_elements.append({'type': 'button', 'widget': btn_smooth})
 
-    # Temp Label
-    lbl_current_temp = tk.Label(control_frame, text="T: --.-- °C", font=("Arial", 16, "bold"))
-    lbl_current_temp.pack(side=tk.RIGHT, padx=20)
-    ui_elements.append({'type': 'label_temp', 'widget': lbl_current_temp})
 
-    # --- FIGURE ---
-    fig = Figure(figsize=(5, 4), dpi=100)
-    fig.subplots_adjust(bottom=0.25)
-    ax = fig.add_subplot(111)
+def toggle_theme():
+    global is_dark_mode
+    is_dark_mode = not is_dark_mode
+    update_theme_colors()
 
-    # Линия графика
-    line, = ax.plot([], [], '-', linewidth=2)
 
-    canvas = FigureCanvasTkAgg(fig, master=root)
-    canvas.draw()
-    canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+btn_theme = tk.Button(control_frame, text="Theme", command=toggle_theme)
+btn_theme.pack(side=tk.LEFT, padx=5)
+ui_elements.append({'type': 'button', 'widget': btn_theme})
 
-except Exception as e:
-    logging.critical(f"Failed to initialize GUI: {e}", exc_info=True)
-    exit()
+# Current Temp (Right)
+lbl_current_temp = tk.Label(control_frame, text="--.-- °C", font=("Arial", 16, "bold"))
+lbl_current_temp.pack(side=tk.RIGHT, padx=20)
+ui_elements.append({'type': 'label_temp', 'widget': lbl_current_temp})
 
+# --- 2. PLOT AREA ---
+fig = Figure(figsize=(5, 4), dpi=100)
+fig.subplots_adjust(bottom=0.25)
+ax = fig.add_subplot(111)
+line, = ax.plot([], [], '-', linewidth=2)
+canvas = FigureCanvasTkAgg(fig, master=root)
+canvas.draw()
+canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+
+# --- 3. STATUS BAR (RAW DATA) ---
+status_frame = tk.Frame(root, bd=1, relief=tk.SUNKEN)
+status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+ui_elements.append({'type': 'frame', 'widget': status_frame})
+
+lbl_status = tk.Label(status_frame, text="Status: Waiting...", font=("Consolas", 9), anchor="w")
+lbl_status.pack(side=tk.LEFT, fill=tk.X, padx=5)
+
+
+# Don't add to ui_elements standard list because text color changes dynamically
 
 # ==========================================
-# 5. THEME LOGIC
+# 5. THEME ENGINE
 # ==========================================
 def update_theme_colors():
-    try:
-        t = THEME['dark'] if is_dark_mode else THEME['light']
-        root.configure(bg=t['bg'])
+    t = THEME['dark'] if is_dark_mode else THEME['light']
+    root.configure(bg=t['bg'])
 
-        for item in ui_elements:
-            w = item['widget']
-            w_type = item['type']
+    for item in ui_elements:
+        w = item['widget']
+        typ = item['type']
+        if typ == 'frame':
+            w.configure(bg=t['bg'])
+        elif typ == 'label':
+            w.configure(bg=t['bg'], fg=t['fg'])
+        elif typ == 'label_temp':
+            w.configure(bg=t['bg'], fg=t['fg'])
+        elif typ == 'entry':
+            w.configure(bg=t['entry_bg'], fg=t['entry_fg'], insertbackground=t['fg'])
+        elif typ == 'button':
+            w.configure(bg=t['btn_bg'], fg=t['btn_fg'])
 
-            if w_type == 'frame':
-                w.configure(bg=t['bg'])
-            elif w_type in ['label', 'label_temp']:
-                w.configure(bg=t['bg'], fg=t['fg'])
-            elif w_type == 'entry':
-                w.configure(bg=t['entry_bg'], fg=t['entry_fg'], insertbackground=t['fg'])
-            elif w_type == 'button':
-                w.configure(bg=t['btn_bg'], fg=t['btn_fg'])
+    # Status bar special handling
+    status_frame.configure(bg=t['entry_bg'])
+    lbl_status.configure(bg=t['entry_bg'], fg=t['fg'])
 
-        fig.patch.set_facecolor(t['plot_bg'])
-        ax.set_facecolor(t['plot_bg'])
-
-        for spine in ax.spines.values():
-            spine.set_color(t['axis_color'])
-
-        ax.tick_params(axis='both', colors=t['axis_color'])
-        ax.yaxis.label.set_color(t['axis_color'])
-        ax.xaxis.label.set_color(t['axis_color'])
-        ax.title.set_color(t['axis_color'])
-        line.set_color(t['line_color'])
-
-        grid_color = '#505050' if is_dark_mode else '#b0b0b0'
-        ax.grid(True, linestyle='--', alpha=0.5, color=grid_color)
-        canvas.draw()
-    except Exception as e:
-        logging.error(f"Error updating theme: {e}", exc_info=True)
+    # Plot
+    fig.patch.set_facecolor(t['plot_bg'])
+    ax.set_facecolor(t['plot_bg'])
+    for sp in ax.spines.values(): sp.set_color(t['axis_color'])
+    ax.tick_params(colors=t['axis_color'])
+    ax.yaxis.label.set_color(t['axis_color'])
+    ax.xaxis.label.set_color(t['axis_color'])
+    line.set_color(t['line_color'])
+    ax.grid(True, linestyle='--', alpha=0.5, color='#505050' if is_dark_mode else '#b0b0b0')
+    canvas.draw()
 
 
-try:
-    update_theme_colors()
-except Exception as e:
-    logging.error(f"Initial theme application failed: {e}")
+update_theme_colors()
 
 
 # ==========================================
-# 6. UPDATE GRAPH (WITH SMOOTHING)
+# 6. MAIN LOOP
 # ==========================================
 def update_graph(frame):
-    # Read Data
-    if serial_connection.in_waiting > 0:
-        try:
-            # Loop to read all available bytes (to clear buffer and get latest)
-            while serial_connection.in_waiting > 0:
-                raw = serial_connection.readline().decode('utf-8').strip()
-                if not raw: continue
-                val = float(raw)
+    t = THEME['dark'] if is_dark_mode else THEME['light']
 
-                now_str = datetime.now().strftime('%H:%M:%S')
-                full_time_csv = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+    # Check connection
+    if serial_connection and serial_connection.is_open:
+        if serial_connection.in_waiting > 0:
+            try:
+                # Read line
+                raw_bytes = serial_connection.readline()
+                try:
+                    raw_str = raw_bytes.decode('utf-8').strip()
+                except:
+                    raw_str = str(raw_bytes)
 
-                full_history_y.append(val)
-                full_history_x.append(now_str)
-                csv_writer.writerow([full_time_csv, val])
-                lbl_current_temp.config(text=f"T: {val:.2f} °C")
+                if raw_str:
+                    # Try to parse
+                    try:
+                        val = float(raw_str)
+                        # SUCCESS
+                        now = datetime.now()
+                        full_history_y.append(val)
+                        full_history_x.append(now.strftime('%H:%M:%S'))
+                        csv_writer.writerow([now.strftime('%Y-%m-%d %H:%M:%S.%f'), val])
+                        lbl_current_temp.config(text=f"{val:.2f} °C")
 
-        except ValueError:
-            # Common error when reading half-byte or garbage, just log debug
-            # logging.debug("Received non-float data from serial.")
-            pass
-        except Exception as e:
-            logging.error(f"Error reading/processing serial data: {e}", exc_info=True)
+                        # Status OK
+                        lbl_status.config(text=f"Status: Receiving Data ({len(full_history_y)} pts)", fg=t['status_ok'])
+                    except ValueError:
+                        # FAIL (Not a number) -> Show RAW
+                        lbl_status.config(text=f"RAW DATA (Not Number): {raw_str}", fg=t['status_err'])
+                        # Log to file too to be safe
+                        logging.debug(f"Raw garbage received: {raw_str}")
 
+            except Exception as e:
+                lbl_status.config(text=f"Read Error: {e}", fg=t['status_err'])
+    else:
+        lbl_status.config(text="Status: Disconnected (Select Port and Click Connect)", fg=t['fg'])
+
+    # Flush CSV
     try:
         csv_file.flush()
-    except Exception as e:
-        logging.error(f"Error flushing CSV file: {e}")
+    except:
+        pass
 
+    # DRAW
     if not full_history_x: return line,
 
-    try:
-        # Окно просмотра
-        start = max(0, len(full_history_x) - current_window_width)
-        view_x = full_history_x[start:]
-        view_y = np.array(full_history_y[start:])  # Convert to numpy array
-        x_indices = np.arange(len(view_y))
+    # Windowing
+    start = max(0, len(full_history_x) - current_window_width)
+    view_x = full_history_x[start:]
+    view_y = np.array(full_history_y[start:])
+    x_idxs = np.arange(len(view_y))
 
-        # --- СГЛАЖИВАНИЕ (SMOOTHING) ---
-        if is_smooth_enabled and len(view_y) > 3:
-            try:
-                # Создаем более плотную сетку X (300 точек вместо 50)
-                x_smooth = np.linspace(x_indices.min(), x_indices.max(), 300)
+    # Smoothing
+    if is_smooth_enabled and len(view_y) > 3:
+        try:
+            x_smooth = np.linspace(x_idxs.min(), x_idxs.max(), 300)
+            spl = make_interp_spline(x_idxs, view_y, k=3)
+            y_smooth = spl(x_smooth)
+            line.set_data(x_smooth, y_smooth)
+        except:
+            line.set_data(x_idxs, view_y)
+    else:
+        line.set_data(x_idxs, view_y)
 
-                # Строим сплайн (k=3 - кубический, самый "округлый")
-                spl = make_interp_spline(x_indices, view_y, k=3)
-                y_smooth = spl(x_smooth)
+    # Axis Limits
+    ax.set_xlim(0, max(1, len(view_y) - 1))
+    ax.set_ylim(current_y_min, current_y_max)
 
-                # Рисуем гладкую линию
-                line.set_data(x_smooth, y_smooth)
-            except Exception as e:
-                # Если ошибка в математике, рисуем обычную линию
-                logging.warning(f"Spline calculation failed: {e}. Reverting to linear plot.")
-                line.set_data(x_indices, view_y)
-        else:
-            # Рисуем обычную ломаную
-            line.set_data(x_indices, view_y)
-
-        # Оси
-        ax.set_xlim(0, max(1, len(view_y) - 1))
-        ax.set_ylim(current_y_min, current_y_max)
-
-        # Умные подписи
-        num_points = len(view_y)
-        if num_points > 0:
-            font_size = 10
-            if num_points > 30: font_size = 9
-            if num_points > 60: font_size = 8
-            if num_points > 100: font_size = 7
-
-            step = 1
-            if num_points > 60: step = num_points // 60 + 1
-
-            tick_indices = list(range(0, num_points, step))
-            if (num_points - 1) not in tick_indices:
-                tick_indices.append(num_points - 1)
-
-            tick_labels = [view_x[i] for i in tick_indices]
-            ax.set_xticks(tick_indices)
-            ax.set_xticklabels(tick_labels, rotation=90, fontsize=font_size)
-
-    except Exception as e:
-        logging.error(f"Error updating plot: {e}", exc_info=True)
+    # Smart Ticks
+    n = len(view_y)
+    if n > 0:
+        step = 1 if n < 60 else n // 60 + 1
+        idxs = list(range(0, n, step))
+        if (n - 1) not in idxs: idxs.append(n - 1)
+        ax.set_xticks(idxs)
+        ax.set_xticklabels([view_x[i] for i in idxs], rotation=90, fontsize=8)
 
     return line,
 
@@ -562,24 +468,14 @@ ani = animation.FuncAnimation(fig, update_graph, interval=200)
 
 
 def on_closing():
-    logging.info("User requested application close.")
     try:
-        if serial_connection and serial_connection.is_open:
-            serial_connection.close()
-            logging.info("Serial port closed.")
-        if csv_file:
-            csv_file.close()
-            logging.info("CSV file closed.")
-    except Exception as e:
-        logging.error(f"Error during cleanup: {e}", exc_info=True)
-
+        if serial_connection: serial_connection.close()
+        csv_file.close()
+    except:
+        pass
     root.quit()
     root.destroy()
-    logging.info("=== APPLICATION STOPPED ===")
 
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
-
-print("GUI Started with Smoothing.")
-logging.info("Main loop started.")
 tk.mainloop()
