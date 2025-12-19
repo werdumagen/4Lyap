@@ -11,6 +11,7 @@ import csv
 import os
 import logging
 import sys
+import numpy as np
 
 # ==========================================
 # 0. LOGGING SETUP
@@ -42,6 +43,8 @@ current_window_width = 50
 serial_connection = None
 
 # Data Buffers
+# full_history_x - один список временных меток
+# full_history_y - список СПИСКОВ (каждый подсписок - отдельная линия графика)
 full_history_x = []
 full_history_y = []
 
@@ -55,7 +58,8 @@ THEME = {
         'entry_bg': '#404040', 'entry_fg': '#ffffff',
         'btn_bg': '#505050', 'btn_fg': '#ffffff',
         'plot_bg': '#2b2b2b', 'axis_color': '#ffffff',
-        'line_color': '#FFFF00',
+        'line_colors': ['#FFFF00', '#00FFFF', '#00FF00', '#FF00FF', '#FFA500', '#FFFFFF'],
+        # Yellow, Cyan, Green, Magenta...
         'status_ok': '#00FF00', 'status_err': '#FF5555'
     },
     'light': {
@@ -63,7 +67,8 @@ THEME = {
         'entry_bg': '#ffffff', 'entry_fg': '#000000',
         'btn_bg': '#dddddd', 'btn_fg': '#000000',
         'plot_bg': '#f0f0f0', 'axis_color': '#000000',
-        'line_color': '#FF0000',
+        'line_colors': ['#FF0000', '#0000FF', '#008000', '#800080', '#FFA500', '#000000'],
+        # Red, Blue, Green, Purple...
         'status_ok': '#008800', 'status_err': '#FF0000'
     }
 }
@@ -126,7 +131,7 @@ def check_port_for_data(port_name):
                         pass
 
                 if valid_numbers > 0:
-                    print(f"SUCCESS!")
+                    print(f"SUCCESS! (Found {valid_numbers} vals)")
                     return ser
             except Exception:
                 pass
@@ -183,7 +188,8 @@ csv_filename = f"{start_time_str}.csv"
 try:
     csv_file = open(csv_filename, mode='w', newline='', encoding='utf-8')
     csv_writer = csv.writer(csv_file, delimiter=',')
-    csv_writer.writerow(["System Time", "Temperature"])
+    # Заголовки запишем позже, когда узнаем сколько каналов, или просто generic
+    csv_writer.writerow(["System Time", "Values..."])
     csv_file.flush()
     logging.info(f"CSV created: {csv_filename}")
 except Exception as e:
@@ -321,8 +327,8 @@ btn_theme = tk.Button(control_frame, text="Theme", command=toggle_theme)
 btn_theme.pack(side=tk.LEFT, padx=5)
 ui_elements.append({'type': 'button', 'widget': btn_theme})
 
-# Current Temp
-lbl_current_temp = tk.Label(control_frame, text="--.-- °C", font=("Arial", 16, "bold"))
+# Current Temp (Right)
+lbl_current_temp = tk.Label(control_frame, text="T: --.--", font=("Arial", 16, "bold"))
 lbl_current_temp.pack(side=tk.RIGHT, padx=20)
 ui_elements.append({'type': 'label_temp', 'widget': lbl_current_temp})
 
@@ -330,7 +336,11 @@ ui_elements.append({'type': 'label_temp', 'widget': lbl_current_temp})
 fig = Figure(figsize=(5, 4), dpi=100)
 fig.subplots_adjust(bottom=0.25)
 ax = fig.add_subplot(111)
-line, = ax.plot([], [], '-', linewidth=2)
+
+# Хранилище объектов линий Matplotlib
+# lines[0] - линия для первого числа, lines[1] - для второго и т.д.
+lines = []
+
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.draw()
 canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
@@ -373,11 +383,18 @@ def update_theme_colors():
     ax.tick_params(colors=t['axis_color'])
     ax.yaxis.label.set_color(t['axis_color'])
     ax.xaxis.label.set_color(t['axis_color'])
-    line.set_color(t['line_color'])
+
+    # Обновляем цвета всех линий, если они уже созданы
+    line_colors = t['line_colors']
+    for i, line in enumerate(lines):
+        color = line_colors[i % len(line_colors)]
+        line.set_color(color)
+
     ax.grid(True, linestyle='--', alpha=0.5, color='#505050' if is_dark_mode else '#b0b0b0')
     canvas.draw()
 
 
+# Инициализация темы (пустые линии пока не красятся)
 update_theme_colors()
 
 
@@ -388,12 +405,10 @@ def update_graph(frame):
     t = THEME['dark'] if is_dark_mode else THEME['light']
     has_new_data = False
 
-    # 1. FAST POLL
     if serial_connection and serial_connection.is_open:
         if serial_connection.in_waiting == 0:
-            return line,
+            return lines
 
-        # 2. READ DATA
         try:
             while serial_connection.in_waiting > 0:
                 raw_bytes = serial_connection.readline()
@@ -403,59 +418,115 @@ def update_graph(frame):
                     raw_str = str(raw_bytes)
 
                 if raw_str:
-                    # Parse potential multiple values separated by "!"
+                    # Разбираем строку: "25.1!30.2!12.0" -> [25.1, 30.2, 12.0]
                     parts = raw_str.split('!')
+                    current_values = []
+
                     for part in parts:
                         part = part.strip()
                         if not part: continue
-
                         try:
                             val = float(part)
-                            # SUCCESS
-                            now = datetime.now()
-                            full_history_y.append(val)
-                            full_history_x.append(now.strftime('%H:%M:%S'))
-
-                            # CSV Format: !value!
-                            csv_writer.writerow([now.strftime('%Y-%m-%d %H:%M:%S.%f'), f"!{val}!"])
-
-                            lbl_current_temp.config(text=f"{val:.2f} °C")
-                            lbl_status.config(text=f"Status: Rx ({len(full_history_y)} pts)", fg=t['status_ok'])
-                            has_new_data = True
+                            current_values.append(val)
                         except ValueError:
+                            pass
+
+                    if current_values:
+                        # SUCCESS
+                        has_new_data = True
+                        now = datetime.now()
+                        now_s = now.strftime('%H:%M:%S')
+                        full_history_x.append(now_s)
+
+                        # Добавляем данные в историю для каждого канала
+                        # Если каналов стало больше, чем было раньше -> расширяем full_history_y
+                        while len(full_history_y) < len(current_values):
+                            # Создаем новую линию истории, заполняя начало пустыми значениями (или NaN),
+                            # чтобы длина совпадала с X. Для простоты просто начнем с текущей длины - 1
+                            # Но лучше просто добавить пустой список и заполнить его np.nan до текущего момента
+                            new_channel_history = [np.nan] * (len(full_history_x) - 1)
+                            full_history_y.append(new_channel_history)
+
+                            # И создаем новую линию на графике
+                            color_idx = len(lines)
+                            color = t['line_colors'][color_idx % len(t['line_colors'])]
+                            new_line, = ax.plot([], [], '-', linewidth=2, color=color)
+                            lines.append(new_line)
+
+                        # Дописываем значения
+                        for i, val in enumerate(current_values):
+                            full_history_y[i].append(val)
+
+                        # Если вдруг пришло меньше значений, чем было каналов раньше,
+                        # в остальные пишем NaN (чтобы графики не ломались)
+                        for i in range(len(current_values), len(full_history_y)):
+                            full_history_y[i].append(np.nan)
+
+                        # CSV: !val1!, !val2!
+                        csv_row = [now.strftime('%Y-%m-%d %H:%M:%S.%f')] + [f"!{v}!" for v in current_values]
+                        csv_writer.writerow(csv_row)
+
+                        # Обновляем текст
+                        status_txt = " | ".join([f"{v:.1f}" for v in current_values])
+                        lbl_current_temp.config(text=f"T: {status_txt}")
+                        lbl_status.config(text=f"Status: Rx ({len(full_history_x)} pts)", fg=t['status_ok'])
+                    else:
+                        # Если строка была, но чисел не нашли
+                        if raw_str:
                             lbl_status.config(text=f"RAW: {raw_str}", fg=t['status_err'])
-                            logging.debug(f"Garbage part: {part}")
 
         except Exception as e:
             lbl_status.config(text=f"Read Error: {e}", fg=t['status_err'])
     else:
-        # Not connected
-        return line,
+        return lines
 
-    # 3. DRAW only if needed
     if has_new_data:
         try:
             csv_file.flush()
         except:
             pass
     else:
-        return line,
+        return lines
 
-    if not full_history_x: return line,
+    if not full_history_x: return lines
 
     # Windowing
     start = max(0, len(full_history_x) - current_window_width)
     view_x = full_history_x[start:]
-    view_y = full_history_y[start:]  # No numpy needed for simple plotting
 
-    # Update Line (No Spline)
-    line.set_data(range(len(view_y)), view_y)
+    # Обновляем каждую линию
+    for i, line in enumerate(lines):
+        channel_data = full_history_y[i]
+        view_y = channel_data[start:]
+
+        # X индексы
+        x_idxs = range(len(view_y))
+
+        line.set_data(x_idxs, view_y)
+
+        # Обновляем пределы осей (динамически, чтобы влезли все линии)
+        # Это стоит делать один раз за кадр, можно оптимизировать
+        pass  # set_ylim делается ниже
 
     # Limits & Ticks
-    ax.set_xlim(0, max(1, len(view_y) - 1))
+    # Найдем min/max среди всех видимых данных для Y-Axis
+    # Собираем все видимые Y в одну кучу для расчета min/max
+    all_visible_y = []
+    for i in range(len(lines)):
+        all_visible_y.extend(full_history_y[i][start:])
+
+    # Фильтруем NaN
+    all_visible_y = [y for y in all_visible_y if not np.isnan(y)]
+
+    ax.set_xlim(0, max(1, len(view_x) - 1))
+
+    # Если хотим авто-масштаб, можно раскомментировать:
+    # if all_visible_y:
+    #    ax.set_ylim(min(all_visible_y)-1, max(all_visible_y)+1)
+    # else:
     ax.set_ylim(current_y_min, current_y_max)
 
-    n = len(view_y)
+    n = len(view_x)
     if n > 0:
         step = 1 if n < 60 else n // 60 + 1
         idxs = list(range(0, n, step))
@@ -463,11 +534,11 @@ def update_graph(frame):
         ax.set_xticks(idxs)
         ax.set_xticklabels([view_x[i] for i in idxs], rotation=90, fontsize=8)
 
-    return line,
+    return lines
 
 
 # Interval 50ms for responsiveness
-ani = animation.FuncAnimation(fig, update_graph, interval=50)
+ani = animation.FuncAnimation(fig, update_graph, interval=50, blit=False)
 
 
 def on_closing():
@@ -481,4 +552,5 @@ def on_closing():
 
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
+print("GUI Started.")
 tk.mainloop()
