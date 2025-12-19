@@ -154,9 +154,6 @@ def auto_find_port():
     for attempt in range(1, max_attempts + 1):
         logging.info(f"Scan attempt {attempt}/{max_attempts}")
         for port in candidates:
-            # Skip checking obviously empty high ports to save time, unless system reported them
-            # but for virtual ports we must check.
-            # Optimization: check only if it opens
             ser = check_port_for_data(port)
             if ser:
                 logging.info(f"Found on {port}")
@@ -228,13 +225,12 @@ ui_elements.append({'type': 'frame', 'widget': frame_port})
 
 create_label(frame_port, "Port:", bold=True)
 
-# --- FIX: Populate ALL ports (COM1-COM32) + System Ports ---
+# --- Populate ALL ports ---
 sys_ports = [p.device for p in serial.tools.list_ports.comports()]
 manual_ports = [f"COM{i}" for i in range(1, 33)]
 all_available_ports = list(set(sys_ports + manual_ports))
 
 
-# Sort nicely (COM1, COM2... COM10)
 def port_sort(x):
     if x.startswith("COM") and x[3:].isdigit(): return int(x[3:])
     return x
@@ -245,11 +241,9 @@ all_available_ports.sort(key=port_sort)
 combo_ports = ttk.Combobox(frame_port, values=all_available_ports, width=8)
 combo_ports.pack(side=tk.LEFT, padx=2)
 
-# Select current port or default
 if serial_connection:
     combo_ports.set(serial_connection.port)
 else:
-    # Try to set COM1 or first available
     if "COM1" in all_available_ports:
         combo_ports.set("COM1")
     elif all_available_ports:
@@ -261,13 +255,11 @@ def manual_connect():
     selected_port = combo_ports.get()
     logging.info(f"Manual connection requested to {selected_port}")
 
-    # Close old
     if serial_connection and serial_connection.is_open:
         serial_connection.close()
 
     try:
         serial_connection = serial.Serial(selected_port, BAUD_RATE, timeout=1.5)
-        # Reset buffers to clear old garbage
         serial_connection.reset_input_buffer()
         logging.info(f"Connected to {selected_port}")
         root.title(f"TermoReciever - {selected_port}")
@@ -292,7 +284,7 @@ entry_min_y = create_entry(control_frame, current_y_min)
 create_label(control_frame, "-")
 entry_max_y = create_entry(control_frame, current_y_max)
 
-tk.Frame(control_frame, width=10).pack(side=tk.LEFT)  # spacer
+tk.Frame(control_frame, width=10).pack(side=tk.LEFT)
 
 create_label(control_frame, "Window:", bold=True)
 entry_width_x = create_entry(control_frame, current_window_width, width=6)
@@ -339,7 +331,7 @@ btn_theme = tk.Button(control_frame, text="Theme", command=toggle_theme)
 btn_theme.pack(side=tk.LEFT, padx=5)
 ui_elements.append({'type': 'button', 'widget': btn_theme})
 
-# Current Temp (Right)
+# Current Temp
 lbl_current_temp = tk.Label(control_frame, text="--.-- °C", font=("Arial", 16, "bold"))
 lbl_current_temp.pack(side=tk.RIGHT, padx=20)
 ui_elements.append({'type': 'label_temp', 'widget': lbl_current_temp})
@@ -353,11 +345,10 @@ canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.draw()
 canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
 
-# --- 3. STATUS BAR (RAW DATA) ---
+# --- 3. STATUS BAR ---
 status_frame = tk.Frame(root, bd=1, relief=tk.SUNKEN)
 status_frame.pack(side=tk.BOTTOM, fill=tk.X)
 ui_elements.append({'type': 'frame', 'widget': status_frame})
-
 lbl_status = tk.Label(status_frame, text="Status: Waiting...", font=("Consolas", 9), anchor="w")
 lbl_status.pack(side=tk.LEFT, fill=tk.X, padx=5)
 
@@ -383,11 +374,9 @@ def update_theme_colors():
         elif typ == 'button':
             w.configure(bg=t['btn_bg'], fg=t['btn_fg'])
 
-    # Status bar special handling
     status_frame.configure(bg=t['entry_bg'])
     lbl_status.configure(bg=t['entry_bg'], fg=t['fg'])
 
-    # Plot
     fig.patch.set_facecolor(t['plot_bg'])
     ax.set_facecolor(t['plot_bg'])
     for sp in ax.spines.values(): sp.set_color(t['axis_color'])
@@ -403,16 +392,21 @@ update_theme_colors()
 
 
 # ==========================================
-# 6. MAIN LOOP
+# 6. MAIN LOOP (OPTIMIZED)
 # ==========================================
 def update_graph(frame):
     t = THEME['dark'] if is_dark_mode else THEME['light']
+    has_new_data = False
 
-    # Check connection
+    # 1. FAST POLL: Check if any data exists
     if serial_connection and serial_connection.is_open:
-        if serial_connection.in_waiting > 0:
-            try:
-                # Read line
+        # If buffer is empty, EXIT IMMEDIATELY (CPU < 1%)
+        if serial_connection.in_waiting == 0:
+            return line,
+
+        # 2. READ DATA: Only if buffer > 0
+        try:
+            while serial_connection.in_waiting > 0:
                 raw_bytes = serial_connection.readline()
                 try:
                     raw_str = raw_bytes.decode('utf-8').strip()
@@ -420,73 +414,71 @@ def update_graph(frame):
                     raw_str = str(raw_bytes)
 
                 if raw_str:
-                    # Try to parse
                     try:
                         val = float(raw_str)
-                        # SUCCESS
+                        # Data is good
                         now = datetime.now()
                         full_history_y.append(val)
                         full_history_x.append(now.strftime('%H:%M:%S'))
                         csv_writer.writerow([now.strftime('%Y-%m-%d %H:%M:%S.%f'), val])
                         lbl_current_temp.config(text=f"{val:.2f} °C")
-
-                        # Status OK
                         lbl_status.config(text=f"Status: Receiving Data ({len(full_history_y)} pts)", fg=t['status_ok'])
+                        has_new_data = True
                     except ValueError:
-                        # FAIL (Not a number) -> Show RAW
                         lbl_status.config(text=f"RAW DATA (Not Number): {raw_str}", fg=t['status_err'])
-                        # Log to file too to be safe
-                        logging.debug(f"Raw garbage received: {raw_str}")
+                        logging.debug(f"Raw: {raw_str}")
 
-            except Exception as e:
-                lbl_status.config(text=f"Read Error: {e}", fg=t['status_err'])
+        except Exception as e:
+            lbl_status.config(text=f"Read Error: {e}", fg=t['status_err'])
     else:
-        lbl_status.config(text="Status: Disconnected (Select Port and Click Connect)", fg=t['fg'])
+        # Not connected, do nothing
+        return line,
 
-    # Flush CSV
-    try:
-        csv_file.flush()
-    except:
-        pass
-
-    # DRAW
-    if not full_history_x: return line,
-
-    # Windowing
-    start = max(0, len(full_history_x) - current_window_width)
-    view_x = full_history_x[start:]
-    view_y = np.array(full_history_y[start:])
-    x_idxs = np.arange(len(view_y))
-
-    # Smoothing
-    if is_smooth_enabled and len(view_y) > 3:
+    # 3. HEAVY LIFTING: Only if new data arrived
+    if has_new_data:
         try:
-            x_smooth = np.linspace(x_idxs.min(), x_idxs.max(), 300)
-            spl = make_interp_spline(x_idxs, view_y, k=3)
-            y_smooth = spl(x_smooth)
-            line.set_data(x_smooth, y_smooth)
+            csv_file.flush()
         except:
+            pass
+
+        if not full_history_x: return line,
+
+        # Windowing
+        start = max(0, len(full_history_x) - current_window_width)
+        view_x = full_history_x[start:]
+        view_y = np.array(full_history_y[start:])
+        x_idxs = np.arange(len(view_y))
+
+        # Smoothing
+        if is_smooth_enabled and len(view_y) > 3:
+            try:
+                x_smooth = np.linspace(x_idxs.min(), x_idxs.max(), 300)
+                spl = make_interp_spline(x_idxs, view_y, k=3)
+                y_smooth = spl(x_smooth)
+                line.set_data(x_smooth, y_smooth)
+            except:
+                line.set_data(x_idxs, view_y)
+        else:
             line.set_data(x_idxs, view_y)
-    else:
-        line.set_data(x_idxs, view_y)
 
-    # Axis Limits
-    ax.set_xlim(0, max(1, len(view_y) - 1))
-    ax.set_ylim(current_y_min, current_y_max)
+        # Limits & Ticks
+        ax.set_xlim(0, max(1, len(view_y) - 1))
+        ax.set_ylim(current_y_min, current_y_max)
 
-    # Smart Ticks
-    n = len(view_y)
-    if n > 0:
-        step = 1 if n < 60 else n // 60 + 1
-        idxs = list(range(0, n, step))
-        if (n - 1) not in idxs: idxs.append(n - 1)
-        ax.set_xticks(idxs)
-        ax.set_xticklabels([view_x[i] for i in idxs], rotation=90, fontsize=8)
+        n = len(view_y)
+        if n > 0:
+            step = 1 if n < 60 else n // 60 + 1
+            idxs = list(range(0, n, step))
+            if (n - 1) not in idxs: idxs.append(n - 1)
+            ax.set_xticks(idxs)
+            ax.set_xticklabels([view_x[i] for i in idxs], rotation=90, fontsize=8)
 
     return line,
 
 
-ani = animation.FuncAnimation(fig, update_graph, interval=200)
+# Установлен интервал 50 мс для высокой отзывчивости.
+# Благодаря проверке in_waiting == 0 в начале, это не грузит процессор.
+ani = animation.FuncAnimation(fig, update_graph, interval=50)
 
 
 def on_closing():
