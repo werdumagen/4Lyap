@@ -9,8 +9,6 @@ from datetime import datetime
 import time
 import csv
 import os
-import numpy as np
-from scipy.interpolate import make_interp_spline
 import logging
 import sys
 
@@ -42,9 +40,6 @@ current_window_width = 50
 
 # Global Connection Object
 serial_connection = None
-
-# Smoothing State
-is_smooth_enabled = True
 
 # Data Buffers
 full_history_x = []
@@ -113,15 +108,27 @@ def check_port_for_data(port_name):
             ser.close()
             return None
 
+        # Try to read a few lines
         for _ in range(4):
             try:
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if not line: continue
-                float(line)  # Try to convert
-                # If success
-                print(f"SUCCESS!")
-                return ser
-            except ValueError:
+
+                # Support "!" separator in validation
+                parts = line.split('!')
+                valid_numbers = 0
+                for part in parts:
+                    if not part.strip(): continue
+                    try:
+                        float(part)
+                        valid_numbers += 1
+                    except ValueError:
+                        pass
+
+                if valid_numbers > 0:
+                    print(f"SUCCESS!")
+                    return ser
+            except Exception:
                 pass
 
         print("GARBAGE")
@@ -168,7 +175,6 @@ def auto_find_port():
 # ==========================================
 # 3. SETUP
 # ==========================================
-# Try to find port, but DON'T EXIT if failed
 serial_connection = auto_find_port()
 
 # Create CSV (Session Log)
@@ -182,7 +188,6 @@ try:
     logging.info(f"CSV created: {csv_filename}")
 except Exception as e:
     logging.error(f"CSV Error: {e}")
-    # We continue even if CSV fails
 
 # ==========================================
 # 4. GUI IMPLEMENTATION
@@ -192,11 +197,9 @@ title_port = serial_connection.port if serial_connection else "NO CONNECTION"
 root.title(f"TermoReciever - {title_port}")
 root.geometry("1000x750")
 
-# --- UI Collections ---
-ui_elements = []  # For theme updates
+ui_elements = []
 
 
-# Helper functions
 def create_label(parent, text, font=("Arial", 10), bold=False):
     f = ("Arial", 10, "bold") if bold else ("Arial", 10)
     lbl = tk.Label(parent, text=text, font=f)
@@ -218,14 +221,13 @@ control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE)
 control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 ui_elements.append({'type': 'frame', 'widget': control_frame})
 
-# A. Port Selection Section
+# A. Port Selection
 frame_port = tk.Frame(control_frame)
 frame_port.pack(side=tk.LEFT, padx=5)
 ui_elements.append({'type': 'frame', 'widget': frame_port})
 
 create_label(frame_port, "Port:", bold=True)
 
-# --- Populate ALL ports ---
 sys_ports = [p.device for p in serial.tools.list_ports.comports()]
 manual_ports = [f"COM{i}" for i in range(1, 33)]
 all_available_ports = list(set(sys_ports + manual_ports))
@@ -243,11 +245,10 @@ combo_ports.pack(side=tk.LEFT, padx=2)
 
 if serial_connection:
     combo_ports.set(serial_connection.port)
-else:
-    if "COM1" in all_available_ports:
-        combo_ports.set("COM1")
-    elif all_available_ports:
-        combo_ports.current(0)
+elif "COM1" in all_available_ports:
+    combo_ports.set("COM1")
+elif all_available_ports:
+    combo_ports.current(0)
 
 
 def manual_connect():
@@ -278,7 +279,7 @@ ui_elements.append({'type': 'button', 'widget': btn_connect})
 # Separator
 tk.Frame(control_frame, width=2, bd=1, relief=tk.SUNKEN).pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
-# B. Settings Section
+# B. Settings
 create_label(control_frame, "Y-Axis:", bold=True)
 entry_min_y = create_entry(control_frame, current_y_min)
 create_label(control_frame, "-")
@@ -309,18 +310,7 @@ btn_apply.pack(side=tk.LEFT, padx=15)
 ui_elements.append({'type': 'button', 'widget': btn_apply})
 
 
-# C. Toggles
-def toggle_smooth():
-    global is_smooth_enabled
-    is_smooth_enabled = not is_smooth_enabled
-    btn_smooth.config(relief=tk.SUNKEN if is_smooth_enabled else tk.RAISED)
-
-
-btn_smooth = tk.Button(control_frame, text="Smooth", command=toggle_smooth, relief=tk.SUNKEN)
-btn_smooth.pack(side=tk.LEFT, padx=10)
-ui_elements.append({'type': 'button', 'widget': btn_smooth})
-
-
+# C. Theme Toggle
 def toggle_theme():
     global is_dark_mode
     is_dark_mode = not is_dark_mode
@@ -392,19 +382,18 @@ update_theme_colors()
 
 
 # ==========================================
-# 6. MAIN LOOP (OPTIMIZED)
+# 6. MAIN LOOP
 # ==========================================
 def update_graph(frame):
     t = THEME['dark'] if is_dark_mode else THEME['light']
     has_new_data = False
 
-    # 1. FAST POLL: Check if any data exists
+    # 1. FAST POLL
     if serial_connection and serial_connection.is_open:
-        # If buffer is empty, EXIT IMMEDIATELY (CPU < 1%)
         if serial_connection.in_waiting == 0:
             return line,
 
-        # 2. READ DATA: Only if buffer > 0
+        # 2. READ DATA
         try:
             while serial_connection.in_waiting > 0:
                 raw_bytes = serial_connection.readline()
@@ -414,70 +403,70 @@ def update_graph(frame):
                     raw_str = str(raw_bytes)
 
                 if raw_str:
-                    try:
-                        val = float(raw_str)
-                        # Data is good
-                        now = datetime.now()
-                        full_history_y.append(val)
-                        full_history_x.append(now.strftime('%H:%M:%S'))
-                        csv_writer.writerow([now.strftime('%Y-%m-%d %H:%M:%S.%f'), val])
-                        lbl_current_temp.config(text=f"{val:.2f} °C")
-                        lbl_status.config(text=f"Status: Receiving Data ({len(full_history_y)} pts)", fg=t['status_ok'])
-                        has_new_data = True
-                    except ValueError:
-                        lbl_status.config(text=f"RAW DATA (Not Number): {raw_str}", fg=t['status_err'])
-                        logging.debug(f"Raw: {raw_str}")
+                    # Parse potential multiple values separated by "!"
+                    parts = raw_str.split('!')
+                    for part in parts:
+                        part = part.strip()
+                        if not part: continue
+
+                        try:
+                            val = float(part)
+                            # SUCCESS
+                            now = datetime.now()
+                            full_history_y.append(val)
+                            full_history_x.append(now.strftime('%H:%M:%S'))
+
+                            # CSV Format: !value!
+                            csv_writer.writerow([now.strftime('%Y-%m-%d %H:%M:%S.%f'), f"!{val}!"])
+
+                            lbl_current_temp.config(text=f"{val:.2f} °C")
+                            lbl_status.config(text=f"Status: Rx ({len(full_history_y)} pts)", fg=t['status_ok'])
+                            has_new_data = True
+                        except ValueError:
+                            lbl_status.config(text=f"RAW: {raw_str}", fg=t['status_err'])
+                            logging.debug(f"Garbage part: {part}")
 
         except Exception as e:
             lbl_status.config(text=f"Read Error: {e}", fg=t['status_err'])
     else:
-        # Not connected, do nothing
+        # Not connected
         return line,
 
-    # 3. HEAVY LIFTING: Only if new data arrived
+    # 3. DRAW only if needed
     if has_new_data:
         try:
             csv_file.flush()
         except:
             pass
+    else:
+        return line,
 
-        if not full_history_x: return line,
+    if not full_history_x: return line,
 
-        # Windowing
-        start = max(0, len(full_history_x) - current_window_width)
-        view_x = full_history_x[start:]
-        view_y = np.array(full_history_y[start:])
-        x_idxs = np.arange(len(view_y))
+    # Windowing
+    start = max(0, len(full_history_x) - current_window_width)
+    view_x = full_history_x[start:]
+    view_y = full_history_y[start:]  # No numpy needed for simple plotting
 
-        # Smoothing
-        if is_smooth_enabled and len(view_y) > 3:
-            try:
-                x_smooth = np.linspace(x_idxs.min(), x_idxs.max(), 300)
-                spl = make_interp_spline(x_idxs, view_y, k=3)
-                y_smooth = spl(x_smooth)
-                line.set_data(x_smooth, y_smooth)
-            except:
-                line.set_data(x_idxs, view_y)
-        else:
-            line.set_data(x_idxs, view_y)
+    # Update Line (No Spline)
+    line.set_data(range(len(view_y)), view_y)
 
-        # Limits & Ticks
-        ax.set_xlim(0, max(1, len(view_y) - 1))
-        ax.set_ylim(current_y_min, current_y_max)
+    # Limits & Ticks
+    ax.set_xlim(0, max(1, len(view_y) - 1))
+    ax.set_ylim(current_y_min, current_y_max)
 
-        n = len(view_y)
-        if n > 0:
-            step = 1 if n < 60 else n // 60 + 1
-            idxs = list(range(0, n, step))
-            if (n - 1) not in idxs: idxs.append(n - 1)
-            ax.set_xticks(idxs)
-            ax.set_xticklabels([view_x[i] for i in idxs], rotation=90, fontsize=8)
+    n = len(view_y)
+    if n > 0:
+        step = 1 if n < 60 else n // 60 + 1
+        idxs = list(range(0, n, step))
+        if (n - 1) not in idxs: idxs.append(n - 1)
+        ax.set_xticks(idxs)
+        ax.set_xticklabels([view_x[i] for i in idxs], rotation=90, fontsize=8)
 
     return line,
 
 
-# Установлен интервал 50 мс для высокой отзывчивости.
-# Благодаря проверке in_waiting == 0 в начале, это не грузит процессор.
+# Interval 50ms for responsiveness
 ani = animation.FuncAnimation(fig, update_graph, interval=50)
 
 
