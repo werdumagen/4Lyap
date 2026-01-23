@@ -4,7 +4,7 @@ import serial
 import serial.tools.list_ports
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
-import matplotlib.animation as animation
+# import matplotlib.animation as animation  <-- БОЛЬШЕ НЕ НУЖНО
 from datetime import datetime
 import time
 import csv
@@ -43,8 +43,6 @@ current_window_width = 50
 serial_connection = None
 
 # Data Buffers
-# full_history_x - один список временных меток
-# full_history_y - список СПИСКОВ (каждый подсписок - отдельная линия графика)
 full_history_x = []
 full_history_y = []
 
@@ -59,7 +57,6 @@ THEME = {
         'btn_bg': '#505050', 'btn_fg': '#ffffff',
         'plot_bg': '#2b2b2b', 'axis_color': '#ffffff',
         'line_colors': ['#FFFF00', '#00FFFF', '#00FF00', '#FF00FF', '#FFA500', '#FFFFFF'],
-        # Yellow, Cyan, Green, Magenta...
         'status_ok': '#00FF00', 'status_err': '#FF5555'
     },
     'light': {
@@ -68,7 +65,6 @@ THEME = {
         'btn_bg': '#dddddd', 'btn_fg': '#000000',
         'plot_bg': '#f0f0f0', 'axis_color': '#000000',
         'line_colors': ['#FF0000', '#0000FF', '#008000', '#800080', '#FFA500', '#000000'],
-        # Red, Blue, Green, Purple...
         'status_ok': '#008800', 'status_err': '#FF0000'
     }
 }
@@ -113,13 +109,11 @@ def check_port_for_data(port_name):
             ser.close()
             return None
 
-        # Try to read a few lines
         for _ in range(4):
             try:
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if not line: continue
 
-                # Support "!" separator in validation
                 parts = line.split('!')
                 valid_numbers = 0
                 for part in parts:
@@ -147,21 +141,17 @@ def check_port_for_data(port_name):
 
 def auto_find_port():
     logging.info("Starting Auto-Discovery...")
-
-    # 1. Get List (System + Manual Range)
     candidates = [p.device for p in serial.tools.list_ports.comports()]
     for i in range(1, MAX_COM_PORT_CHECK + 1):
         p = f"COM{i}"
         if p not in candidates: candidates.append(p)
 
-    # Deduplicate and sort
     def sort_key(x):
         if x.startswith("COM") and x[3:].isdigit(): return int(x[3:])
         return x
 
     candidates = sorted(list(set(candidates)), key=sort_key)
 
-    # 2. Try twice
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         logging.info(f"Scan attempt {attempt}/{max_attempts}")
@@ -182,13 +172,11 @@ def auto_find_port():
 # ==========================================
 serial_connection = auto_find_port()
 
-# Create CSV (Session Log)
 start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 csv_filename = f"{start_time_str}.csv"
 try:
     csv_file = open(csv_filename, mode='w', newline='', encoding='utf-8')
     csv_writer = csv.writer(csv_file, delimiter=',')
-    # Заголовки запишем позже, когда узнаем сколько каналов, или просто generic
     csv_writer.writerow(["System Time", "Values..."])
     csv_file.flush()
     logging.info(f"CSV created: {csv_filename}")
@@ -307,6 +295,8 @@ def apply_settings():
         if new_width < 2: return
         current_y_min, current_y_max, current_window_width = new_min, new_max, new_width
         logging.info("Settings applied.")
+        # Принудительная перерисовка при смене настроек
+        canvas.draw()
     except:
         pass
 
@@ -337,8 +327,6 @@ fig = Figure(figsize=(5, 4), dpi=100)
 fig.subplots_adjust(bottom=0.25)
 ax = fig.add_subplot(111)
 
-# Хранилище объектов линий Matplotlib
-# lines[0] - линия для первого числа, lines[1] - для второго и т.д.
 lines = []
 
 canvas = FigureCanvasTkAgg(fig, master=root)
@@ -384,7 +372,6 @@ def update_theme_colors():
     ax.yaxis.label.set_color(t['axis_color'])
     ax.xaxis.label.set_color(t['axis_color'])
 
-    # Обновляем цвета всех линий, если они уже созданы
     line_colors = t['line_colors']
     for i, line in enumerate(lines):
         color = line_colors[i % len(line_colors)]
@@ -394,22 +381,26 @@ def update_theme_colors():
     canvas.draw()
 
 
-# Инициализация темы (пустые линии пока не красятся)
+# Init Theme
 update_theme_colors()
 
 
 # ==========================================
-# 6. MAIN LOOP
+# 6. MAIN LOOP (OPTIMIZED CPU)
 # ==========================================
-def update_graph(frame):
+def run_app_cycle():
+    """
+    Основной цикл приложения.
+    Вместо анимации Matplotlib, мы используем root.after
+    и перерисовываем график ТОЛЬКО если пришли данные.
+    """
     t = THEME['dark'] if is_dark_mode else THEME['light']
     has_new_data = False
 
+    # 1. ЧИТАЕМ ПОРТ
     if serial_connection and serial_connection.is_open:
-        if serial_connection.in_waiting == 0:
-            return lines
-
         try:
+            # Считываем все строки из буфера
             while serial_connection.in_waiting > 0:
                 raw_bytes = serial_connection.readline()
                 try:
@@ -418,127 +409,87 @@ def update_graph(frame):
                     raw_str = str(raw_bytes)
 
                 if raw_str:
-                    # Разбираем строку: "25.1!30.2!12.0" -> [25.1, 30.2, 12.0]
+                    # Разбор данных
                     parts = raw_str.split('!')
                     current_values = []
-
                     for part in parts:
-                        part = part.strip()
-                        if not part: continue
+                        if not part.strip(): continue
                         try:
-                            val = float(part)
-                            current_values.append(val)
+                            current_values.append(float(part))
                         except ValueError:
                             pass
 
                     if current_values:
-                        # SUCCESS
                         has_new_data = True
                         now = datetime.now()
-                        now_s = now.strftime('%H:%M:%S')
-                        full_history_x.append(now_s)
+                        full_history_x.append(now.strftime('%H:%M:%S'))
 
-                        # Добавляем данные в историю для каждого канала
-                        # Если каналов стало больше, чем было раньше -> расширяем full_history_y
+                        # Создаем новые линии, если каналов стало больше
                         while len(full_history_y) < len(current_values):
-                            # Создаем новую линию истории, заполняя начало пустыми значениями (или NaN),
-                            # чтобы длина совпадала с X. Для простоты просто начнем с текущей длины - 1
-                            # Но лучше просто добавить пустой список и заполнить его np.nan до текущего момента
                             new_channel_history = [np.nan] * (len(full_history_x) - 1)
                             full_history_y.append(new_channel_history)
-
-                            # И создаем новую линию на графике
                             color_idx = len(lines)
                             color = t['line_colors'][color_idx % len(t['line_colors'])]
                             new_line, = ax.plot([], [], '-', linewidth=2, color=color)
                             lines.append(new_line)
 
-                        # Дописываем значения
+                        # Добавляем данные
                         for i, val in enumerate(current_values):
                             full_history_y[i].append(val)
 
-                        # Если вдруг пришло меньше значений, чем было каналов раньше,
-                        # в остальные пишем NaN (чтобы графики не ломались)
+                        # Заполняем остальные (если каналов стало меньше) NaN
                         for i in range(len(current_values), len(full_history_y)):
                             full_history_y[i].append(np.nan)
 
-                        # CSV: !val1!, !val2!
+                        # CSV
                         csv_row = [now.strftime('%Y-%m-%d %H:%M:%S.%f')] + [f"!{v}!" for v in current_values]
                         csv_writer.writerow(csv_row)
 
-                        # Обновляем текст
+                        # Text Info
                         status_txt = " | ".join([f"{v:.1f}" for v in current_values])
                         lbl_current_temp.config(text=f"T: {status_txt}")
                         lbl_status.config(text=f"Status: Rx ({len(full_history_x)} pts)", fg=t['status_ok'])
                     else:
-                        # Если строка была, но чисел не нашли
                         if raw_str:
                             lbl_status.config(text=f"RAW: {raw_str}", fg=t['status_err'])
 
         except Exception as e:
             lbl_status.config(text=f"Read Error: {e}", fg=t['status_err'])
-    else:
-        return lines
 
-    if has_new_data:
+    # 2. РИСУЕМ (ТОЛЬКО ЕСЛИ НУЖНО)
+    if has_new_data and full_history_x:
         try:
+            start = max(0, len(full_history_x) - current_window_width)
+            view_x = full_history_x[start:]
+
+            # Обновляем линии
+            for i, line in enumerate(lines):
+                line.set_data(range(len(view_x)), full_history_y[i][start:])
+
+            # Границы
+            ax.set_xlim(0, max(1, len(view_x) - 1))
+            ax.set_ylim(current_y_min, current_y_max)
+
+            # Тики (подписи)
+            n = len(view_x)
+            if n > 0:
+                step = 1 if n < 60 else n // 60 + 1
+                idxs = list(range(0, n, step))
+                if (n - 1) not in idxs: idxs.append(n - 1)
+                ax.set_xticks(idxs)
+                ax.set_xticklabels([view_x[i] for i in idxs], rotation=90, fontsize=8)
+
+            # Самая "тяжелая" команда, теперь вызывается редко
+            canvas.draw()
+
+            # Сброс CSV буфера
             csv_file.flush()
-        except:
-            pass
-    else:
-        return lines
+        except Exception as e:
+            print(f"Draw Error: {e}")
 
-    if not full_history_x: return lines
-
-    # Windowing
-    start = max(0, len(full_history_x) - current_window_width)
-    view_x = full_history_x[start:]
-
-    # Обновляем каждую линию
-    for i, line in enumerate(lines):
-        channel_data = full_history_y[i]
-        view_y = channel_data[start:]
-
-        # X индексы
-        x_idxs = range(len(view_y))
-
-        line.set_data(x_idxs, view_y)
-
-        # Обновляем пределы осей (динамически, чтобы влезли все линии)
-        # Это стоит делать один раз за кадр, можно оптимизировать
-        pass  # set_ylim делается ниже
-
-    # Limits & Ticks
-    # Найдем min/max среди всех видимых данных для Y-Axis
-    # Собираем все видимые Y в одну кучу для расчета min/max
-    all_visible_y = []
-    for i in range(len(lines)):
-        all_visible_y.extend(full_history_y[i][start:])
-
-    # Фильтруем NaN
-    all_visible_y = [y for y in all_visible_y if not np.isnan(y)]
-
-    ax.set_xlim(0, max(1, len(view_x) - 1))
-
-    # Если хотим авто-масштаб, можно раскомментировать:
-    # if all_visible_y:
-    #    ax.set_ylim(min(all_visible_y)-1, max(all_visible_y)+1)
-    # else:
-    ax.set_ylim(current_y_min, current_y_max)
-
-    n = len(view_x)
-    if n > 0:
-        step = 1 if n < 60 else n // 60 + 1
-        idxs = list(range(0, n, step))
-        if (n - 1) not in idxs: idxs.append(n - 1)
-        ax.set_xticks(idxs)
-        ax.set_xticklabels([view_x[i] for i in idxs], rotation=90, fontsize=8)
-
-    return lines
-
-
-# Interval 50ms for responsiveness
-ani = animation.FuncAnimation(fig, update_graph, interval=50, blit=False)
+    # 3. ПЛАНИРУЕМ СЛЕДУЮЩИЙ ШАГ
+    # 50мс - достаточно быстрая реакция на кнопки и данные, но не грузит CPU
+    root.after(50, run_app_cycle)
 
 
 def on_closing():
@@ -552,5 +503,8 @@ def on_closing():
 
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
+
+# Запускаем наш цикл
 print("GUI Started.")
+run_app_cycle()
 tk.mainloop()
