@@ -33,15 +33,15 @@ logging.info(f"Logging initialized. Writing to: {log_filename}")
 BAUD_RATE = 9600
 MAX_COM_PORT_CHECK = 32
 
-# Настройки по умолчанию
-current_y_min = 10.0  # Изменено по запросу
-current_y_max = 25.0  # Изменено по запросу
-current_window_width = 50  # Будет запрошено при старте
+# Default Settings
+current_y_min = 10.0
+current_y_max = 25.0
+current_window_width = 50  # Will be requested at startup
 
 # Global Connection Object
 serial_connection = None
 
-# Data Buffers (Храним только видимую часть)
+# Data Buffers (Storing only visible part)
 visible_x = []
 visible_y = []
 
@@ -182,13 +182,13 @@ except Exception as e:
 
 # --- GUI INITIALIZATION ---
 root = tk.Tk()
-root.withdraw()  # Скрываем, пока спрашиваем
+root.withdraw()  # Hide main window while asking settings
 
-# --- STARTUP DIALOG (Только ширина окна) ---
+# --- STARTUP DIALOG (English) ---
 try:
     user_width = simpledialog.askinteger(
-        "Настройка отображения",
-        "Введите ширину окна (кол-во точек на экране):",
+        "Display Settings",
+        "Enter window width (number of points):",
         initialvalue=current_window_width,
         minvalue=2,
         parent=root
@@ -198,7 +198,7 @@ try:
 except Exception as e:
     logging.error(f"Dialog Error: {e}")
 
-root.deiconify()  # Показываем окно
+root.deiconify()  # Show main window
 
 title_port = serial_connection.port if serial_connection else "NO CONNECTION"
 root.title(f"TermoReciever - {title_port}")
@@ -312,7 +312,7 @@ def apply_settings():
         current_y_min, current_y_max, current_window_width = new_min, new_max, new_width
         logging.info("Settings applied.")
 
-        # Обрезаем данные, если окно стало меньше
+        # Trim data if window size decreased
         if len(visible_x) > current_window_width:
             visible_x = visible_x[-current_window_width:]
             for i in range(len(visible_y)):
@@ -412,14 +412,15 @@ update_theme_colors()
 # ==========================================
 def run_app_cycle():
     """
-    Цикл с удалением старых данных, выходящих за Window Width.
+    Main loop with manual update rate.
+    Deletes data that goes beyond the window width.
     """
     global visible_x, visible_y
 
     t = THEME['dark'] if is_dark_mode else THEME['light']
     has_new_data = False
 
-    # 1. ЧИТАЕМ ПОРТ
+    # 1. READ PORT
     if serial_connection and serial_connection.is_open:
         try:
             while serial_connection.in_waiting > 0:
@@ -443,10 +444,10 @@ def run_app_cycle():
                         has_new_data = True
                         now = datetime.now()
 
-                        # Добавляем новую точку
+                        # Add new point
                         visible_x.append(now.strftime('%H:%M:%S'))
 
-                        # Если каналов стало больше - добавляем линии
+                        # If more channels appeared - add lines
                         while len(visible_y) < len(current_values):
                             new_channel_history = [np.nan] * (len(visible_x) - 1)
                             visible_y.append(new_channel_history)
@@ -455,22 +456,22 @@ def run_app_cycle():
                             new_line, = ax.plot([], [], '-', linewidth=2, color=color)
                             lines.append(new_line)
 
-                        # Записываем значения
+                        # Write values
                         for i, val in enumerate(current_values):
                             visible_y[i].append(val)
 
-                        # Если каналов меньше, чем было - пишем NaN
+                        # If fewer channels than before - pad with NaN
                         for i in range(len(current_values), len(visible_y)):
                             visible_y[i].append(np.nan)
 
-                        # === ГЛАВНАЯ ЛОГИКА: УДАЛЕНИЕ СТАРОГО ===
+                        # === MAIN LOGIC: DELETE OLD DATA ===
                         if len(visible_x) > current_window_width:
                             excess = len(visible_x) - current_window_width
                             visible_x = visible_x[excess:]
                             for i in range(len(visible_y)):
                                 visible_y[i] = visible_y[i][excess:]
 
-                        # CSV (пишем все подряд в файл)
+                        # CSV (write everything to file)
                         csv_row = [now.strftime('%Y-%m-%d %H:%M:%S.%f')] + [f"!{v}!" for v in current_values]
                         csv_writer.writerow(csv_row)
 
@@ -484,7 +485,7 @@ def run_app_cycle():
         except Exception as e:
             lbl_status.config(text=f"Read Error: {e}", fg=t['status_err'])
 
-    # 2. РИСУЕМ
+    # 2. DRAW
     if has_new_data and visible_x:
         try:
             x_range = range(len(visible_x))
@@ -493,7 +494,7 @@ def run_app_cycle():
                 line.set_data(x_range, visible_y[i])
 
             ax.set_xlim(0, max(1, len(visible_x) - 1))
-            # Используем глобальные настройки Y (можно менять на лету)
+            # Use global Y settings (adjustable at runtime)
             ax.set_ylim(current_y_min, current_y_max)
 
             n = len(visible_x)
