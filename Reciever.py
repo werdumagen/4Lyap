@@ -45,27 +45,19 @@ serial_connection = None
 visible_x = []
 visible_y = []
 
-# Theme State
-is_dark_mode = True
-
-# Colors definition
-THEME = {
-    'dark': {
-        'bg': '#2b2b2b', 'fg': '#ffffff',
-        'entry_bg': '#404040', 'entry_fg': '#ffffff',
-        'btn_bg': '#505050', 'btn_fg': '#ffffff',
-        'plot_bg': '#2b2b2b', 'axis_color': '#ffffff',
-        'line_colors': ['#FFFF00', '#00FFFF', '#00FF00', '#FF00FF', '#FFA500', '#FFFFFF'],
-        'status_ok': '#00FF00', 'status_err': '#FF5555'
-    },
-    'light': {
-        'bg': '#f0f0f0', 'fg': '#000000',
-        'entry_bg': '#ffffff', 'entry_fg': '#000000',
-        'btn_bg': '#dddddd', 'btn_fg': '#000000',
-        'plot_bg': '#f0f0f0', 'axis_color': '#000000',
-        'line_colors': ['#FF0000', '#0000FF', '#008000', '#800080', '#FFA500', '#000000'],
-        'status_ok': '#008800', 'status_err': '#FF0000'
-    }
+# Dark Theme Colors (Fixed)
+COLORS = {
+    'bg': '#2b2b2b',
+    'fg': '#ffffff',
+    'entry_bg': '#404040',
+    'entry_fg': '#ffffff',
+    'btn_bg': '#505050',
+    'btn_fg': '#ffffff',
+    'plot_bg': '#2b2b2b',
+    'axis_color': '#ffffff',
+    'line_colors': ['#FFFF00', '#00FFFF', '#00FF00', '#FF00FF', '#FFA500', '#FFFFFF'],
+    'status_ok': '#00FF00',
+    'status_err': '#FF5555'
 }
 
 
@@ -204,19 +196,22 @@ title_port = serial_connection.port if serial_connection else "NO CONNECTION"
 root.title(f"TermoReciever - {title_port}")
 root.geometry("1000x750")
 
+# Apply Dark Theme to Root
+root.configure(bg=COLORS['bg'])
+
 ui_elements = []
 
 
 def create_label(parent, text, font=("Arial", 10), bold=False):
     f = ("Arial", 10, "bold") if bold else ("Arial", 10)
-    lbl = tk.Label(parent, text=text, font=f)
+    lbl = tk.Label(parent, text=text, font=f, bg=COLORS['bg'], fg=COLORS['fg'])
     lbl.pack(side=tk.LEFT, padx=5)
     ui_elements.append({'type': 'label', 'widget': lbl})
     return lbl
 
 
 def create_entry(parent, default_val, width=5):
-    ent = tk.Entry(parent, width=width)
+    ent = tk.Entry(parent, width=width, bg=COLORS['entry_bg'], fg=COLORS['entry_fg'], insertbackground=COLORS['fg'])
     ent.insert(0, str(default_val))
     ent.pack(side=tk.LEFT, padx=2)
     ui_elements.append({'type': 'entry', 'widget': ent})
@@ -224,12 +219,12 @@ def create_entry(parent, default_val, width=5):
 
 
 # --- 1. TOP CONTROL PANEL ---
-control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE)
+control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE, bg=COLORS['bg'])
 control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 ui_elements.append({'type': 'frame', 'widget': control_frame})
 
 # A. Port Selection
-frame_port = tk.Frame(control_frame)
+frame_port = tk.Frame(control_frame, bg=COLORS['bg'])
 frame_port.pack(side=tk.LEFT, padx=5)
 ui_elements.append({'type': 'frame', 'widget': frame_port})
 
@@ -279,7 +274,7 @@ def manual_connect():
         root.title("TermoReciever - Disconnected")
 
 
-btn_connect = tk.Button(frame_port, text="Connect", command=manual_connect)
+btn_connect = tk.Button(frame_port, text="Connect", command=manual_connect, bg=COLORS['btn_bg'], fg=COLORS['btn_fg'])
 btn_connect.pack(side=tk.LEFT, padx=5)
 ui_elements.append({'type': 'button', 'widget': btn_connect})
 
@@ -292,7 +287,7 @@ entry_min_y = create_entry(control_frame, current_y_min)
 create_label(control_frame, "-")
 entry_max_y = create_entry(control_frame, current_y_max)
 
-tk.Frame(control_frame, width=10).pack(side=tk.LEFT)
+tk.Frame(control_frame, width=10, bg=COLORS['bg']).pack(side=tk.LEFT)
 
 create_label(control_frame, "Window:", bold=True)
 entry_width_x = create_entry(control_frame, current_window_width, width=6)
@@ -323,31 +318,30 @@ def apply_settings():
         pass
 
 
-btn_apply = tk.Button(control_frame, text="Apply", command=apply_settings)
+btn_apply = tk.Button(control_frame, text="Apply", command=apply_settings, bg=COLORS['btn_bg'], fg=COLORS['btn_fg'])
 btn_apply.pack(side=tk.LEFT, padx=15)
 ui_elements.append({'type': 'button', 'widget': btn_apply})
 
-
-# C. Theme Toggle
-def toggle_theme():
-    global is_dark_mode
-    is_dark_mode = not is_dark_mode
-    update_theme_colors()
-
-
-btn_theme = tk.Button(control_frame, text="Theme", command=toggle_theme)
-btn_theme.pack(side=tk.LEFT, padx=5)
-ui_elements.append({'type': 'button', 'widget': btn_theme})
+# (Theme Toggle Button Removed)
 
 # Current Temp (Right)
-lbl_current_temp = tk.Label(control_frame, text="T: --.--", font=("Arial", 16, "bold"))
+lbl_current_temp = tk.Label(control_frame, text="T: --.--", font=("Arial", 16, "bold"), bg=COLORS['bg'],
+                            fg=COLORS['fg'])
 lbl_current_temp.pack(side=tk.RIGHT, padx=20)
 ui_elements.append({'type': 'label_temp', 'widget': lbl_current_temp})
 
 # --- 2. PLOT AREA ---
 fig = Figure(figsize=(5, 4), dpi=100)
 fig.subplots_adjust(bottom=0.25)
+# Set dark theme for Plot
+fig.patch.set_facecolor(COLORS['plot_bg'])
 ax = fig.add_subplot(111)
+ax.set_facecolor(COLORS['plot_bg'])
+for sp in ax.spines.values(): sp.set_color(COLORS['axis_color'])
+ax.tick_params(colors=COLORS['axis_color'])
+ax.yaxis.label.set_color(COLORS['axis_color'])
+ax.xaxis.label.set_color(COLORS['axis_color'])
+ax.grid(True, linestyle='--', alpha=0.5, color='#505050')
 
 lines = []
 
@@ -356,55 +350,12 @@ canvas.draw()
 canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
 
 # --- 3. STATUS BAR ---
-status_frame = tk.Frame(root, bd=1, relief=tk.SUNKEN)
+status_frame = tk.Frame(root, bd=1, relief=tk.SUNKEN, bg=COLORS['entry_bg'])
 status_frame.pack(side=tk.BOTTOM, fill=tk.X)
 ui_elements.append({'type': 'frame', 'widget': status_frame})
-lbl_status = tk.Label(status_frame, text="Status: Waiting...", font=("Consolas", 9), anchor="w")
+lbl_status = tk.Label(status_frame, text="Status: Waiting...", font=("Consolas", 9), anchor="w", bg=COLORS['entry_bg'],
+                      fg=COLORS['fg'])
 lbl_status.pack(side=tk.LEFT, fill=tk.X, padx=5)
-
-
-# ==========================================
-# 5. THEME ENGINE
-# ==========================================
-def update_theme_colors():
-    t = THEME['dark'] if is_dark_mode else THEME['light']
-    root.configure(bg=t['bg'])
-
-    for item in ui_elements:
-        w = item['widget']
-        typ = item['type']
-        if typ == 'frame':
-            w.configure(bg=t['bg'])
-        elif typ == 'label':
-            w.configure(bg=t['bg'], fg=t['fg'])
-        elif typ == 'label_temp':
-            w.configure(bg=t['bg'], fg=t['fg'])
-        elif typ == 'entry':
-            w.configure(bg=t['entry_bg'], fg=t['entry_fg'], insertbackground=t['fg'])
-        elif typ == 'button':
-            w.configure(bg=t['btn_bg'], fg=t['btn_fg'])
-
-    status_frame.configure(bg=t['entry_bg'])
-    lbl_status.configure(bg=t['entry_bg'], fg=t['fg'])
-
-    fig.patch.set_facecolor(t['plot_bg'])
-    ax.set_facecolor(t['plot_bg'])
-    for sp in ax.spines.values(): sp.set_color(t['axis_color'])
-    ax.tick_params(colors=t['axis_color'])
-    ax.yaxis.label.set_color(t['axis_color'])
-    ax.xaxis.label.set_color(t['axis_color'])
-
-    line_colors = t['line_colors']
-    for i, line in enumerate(lines):
-        color = line_colors[i % len(line_colors)]
-        line.set_color(color)
-
-    ax.grid(True, linestyle='--', alpha=0.5, color='#505050' if is_dark_mode else '#b0b0b0')
-    canvas.draw()
-
-
-# Init Theme
-update_theme_colors()
 
 
 # ==========================================
@@ -417,7 +368,6 @@ def run_app_cycle():
     """
     global visible_x, visible_y
 
-    t = THEME['dark'] if is_dark_mode else THEME['light']
     has_new_data = False
 
     # 1. READ PORT
@@ -452,7 +402,7 @@ def run_app_cycle():
                             new_channel_history = [np.nan] * (len(visible_x) - 1)
                             visible_y.append(new_channel_history)
                             color_idx = len(lines)
-                            color = t['line_colors'][color_idx % len(t['line_colors'])]
+                            color = COLORS['line_colors'][color_idx % len(COLORS['line_colors'])]
                             new_line, = ax.plot([], [], '-', linewidth=2, color=color)
                             lines.append(new_line)
 
@@ -477,13 +427,13 @@ def run_app_cycle():
 
                         status_txt = " | ".join([f"{v:.1f}" for v in current_values])
                         lbl_current_temp.config(text=f"T: {status_txt}")
-                        lbl_status.config(text=f"Status: Rx ({len(visible_x)} pts)", fg=t['status_ok'])
+                        lbl_status.config(text=f"Status: Rx ({len(visible_x)} pts)", fg=COLORS['status_ok'])
                     else:
                         if raw_str:
-                            lbl_status.config(text=f"RAW: {raw_str}", fg=t['status_err'])
+                            lbl_status.config(text=f"RAW: {raw_str}", fg=COLORS['status_err'])
 
         except Exception as e:
-            lbl_status.config(text=f"Read Error: {e}", fg=t['status_err'])
+            lbl_status.config(text=f"Read Error: {e}", fg=COLORS['status_err'])
 
     # 2. DRAW
     if has_new_data and visible_x:
