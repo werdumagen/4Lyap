@@ -1,22 +1,30 @@
-import tkinter as tk
-from tkinter import ttk, simpledialog, messagebox
+import sys
+import os
+import time
+import datetime
+import csv
+import logging
 import serial
 import serial.tools.list_ports
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
-from datetime import datetime
-import time
-import csv
-import os
-import logging
-import sys
 import numpy as np
 
-# ==========================================
-# 0. LOGGING SETUP
-# ==========================================
-log_filename = f"log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QLabel, QComboBox, QPushButton,
+                             QLineEdit, QMessageBox, QInputDialog, QFrame)
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QColor, QPalette
 
+import pyqtgraph as pg
+
+# ==========================================
+# 0. НАСТРОЙКИ И ЛОГИРОВАНИЕ
+# ==========================================
+# Настройка темной темы для PyQtGraph (глобально)
+pg.setConfigOption('background', '#2b2b2b')
+pg.setConfigOption('foreground', '#ffffff')
+pg.setConfigOptions(antialias=True)  # Сглаживание линий
+
+log_filename = f"log_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -25,456 +33,355 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
+logging.info("=== APPLICATION STARTED (PyQt6 + PyQtGraph) ===")
 
-logging.info("=== APPLICATION STARTED ===")
-logging.info(f"Logging initialized. Writing to: {log_filename}")
-
-# --- GLOBAL SETTINGS (Defaults) ---
-BAUD_RATE = 9600
-MAX_COM_PORT_CHECK = 32
-
-# Default Settings
-current_y_min = 10.0
-current_y_max = 25.0
-current_window_width = 50  # Will be requested at startup
-
-# Global Connection Object
-serial_connection = None
-
-# Data Buffers (Storing only visible part)
-visible_x = []
-visible_y = []
-
-# Dark Theme Colors (Fixed)
-COLORS = {
-    'bg': '#2b2b2b',
-    'fg': '#ffffff',
-    'entry_bg': '#404040',
-    'entry_fg': '#ffffff',
-    'btn_bg': '#505050',
-    'btn_fg': '#ffffff',
-    'plot_bg': '#2b2b2b',
-    'axis_color': '#ffffff',
-    'line_colors': ['#FFFF00', '#00FFFF', '#00FF00', '#FF00FF', '#FFA500', '#FFFFFF'],
-    'status_ok': '#00FF00',
-    'status_err': '#FF5555'
-}
+# Цвета линий (как в прошлом коде)
+LINE_COLORS = ['#FFFF00', '#00FFFF', '#00FF00', '#FF00FF', '#FFA500', '#FFFFFF']  # Yellow, Cyan, Green...
 
 
 # ==========================================
-# 1. SPLASH SCREEN
+# 1. ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ
 # ==========================================
-def show_splash():
-    if not os.path.exists("logo.png"):
-        return
-    try:
-        splash_root = tk.Tk()
-        splash_root.overrideredirect(True)
-        img = tk.PhotoImage(file="logo.png")
-        w, h = img.width(), img.height()
-        ws, hs = splash_root.winfo_screenwidth(), splash_root.winfo_screenheight()
-        splash_root.geometry(f"{w}x{h}+{(ws // 2) - (w // 2)}+{(hs // 2) - (h // 2)}")
-        tk.Label(splash_root, image=img, borderwidth=0).pack()
-        splash_root.after(3000, splash_root.destroy)
-        splash_root.mainloop()
-    except Exception:
-        pass
-
-
-show_splash()
-
-
-# ==========================================
-# 2. PORT SCANNING LOGIC
-# ==========================================
-def check_port_for_data(port_name):
-    print(f"   [...] Checking {port_name}...", end=" ", flush=True)
-    ser = None
-    try:
-        ser = serial.Serial(port_name, BAUD_RATE, timeout=1.5)
-        ser.reset_input_buffer()
-        time.sleep(1.1)
-
-        if ser.in_waiting == 0:
-            print("EMPTY")
-            ser.close()
-            return None
-
-        for _ in range(4):
-            try:
-                line = ser.readline().decode('utf-8', errors='ignore').strip()
-                if not line: continue
-                parts = line.split('!')
-                valid_numbers = 0
-                for part in parts:
-                    if not part.strip(): continue
-                    try:
-                        float(part)
-                        valid_numbers += 1
-                    except ValueError:
-                        pass
-                if valid_numbers > 0:
-                    print(f"SUCCESS! (Found {valid_numbers} vals)")
-                    return ser
-            except Exception:
-                pass
-        print("GARBAGE")
-        ser.close()
-        return None
-    except Exception:
-        print("BUSY/ERR")
-        if ser: ser.close()
-        return None
-
-
-def auto_find_port():
-    logging.info("Starting Auto-Discovery...")
-    candidates = [p.device for p in serial.tools.list_ports.comports()]
-    for i in range(1, MAX_COM_PORT_CHECK + 1):
-        p = f"COM{i}"
-        if p not in candidates: candidates.append(p)
-
-    def sort_key(x):
-        if x.startswith("COM") and x[3:].isdigit(): return int(x[3:])
-        return x
-
-    candidates = sorted(list(set(candidates)), key=sort_key)
-
-    max_attempts = 2
-    for attempt in range(1, max_attempts + 1):
-        logging.info(f"Scan attempt {attempt}/{max_attempts}")
-        for port in candidates:
-            ser = check_port_for_data(port)
-            if ser:
-                logging.info(f"Found on {port}")
-                return ser
-        if attempt < max_attempts:
-            time.sleep(0.5)
-
-    logging.warning("Auto-discovery failed. Opening GUI anyway.")
-    return None
-
-
-# ==========================================
-# 3. SETUP & STARTUP DIALOG
-# ==========================================
-serial_connection = auto_find_port()
-
-# CSV Logging
-start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-csv_filename = f"{start_time_str}.csv"
-try:
-    csv_file = open(csv_filename, mode='w', newline='', encoding='utf-8')
-    csv_writer = csv.writer(csv_file, delimiter=',')
-    csv_writer.writerow(["System Time", "Values..."])
-    csv_file.flush()
-    logging.info(f"CSV created: {csv_filename}")
-except Exception as e:
-    logging.error(f"CSV Error: {e}")
-
-# --- GUI INITIALIZATION ---
-root = tk.Tk()
-root.withdraw()  # Hide main window while asking settings
-
-# --- STARTUP DIALOG (English) ---
-try:
-    user_width = simpledialog.askinteger(
-        "Display Settings",
-        "Enter window width (number of points):",
-        initialvalue=current_window_width,
-        minvalue=2,
-        parent=root
-    )
-    if user_width is not None:
-        current_window_width = user_width
-except Exception as e:
-    logging.error(f"Dialog Error: {e}")
-
-root.deiconify()  # Show main window
-
-title_port = serial_connection.port if serial_connection else "NO CONNECTION"
-root.title(f"TermoReciever - {title_port}")
-root.geometry("1000x750")
-
-# Apply Dark Theme to Root
-root.configure(bg=COLORS['bg'])
-
-ui_elements = []
-
-
-def create_label(parent, text, font=("Arial", 10), bold=False):
-    f = ("Arial", 10, "bold") if bold else ("Arial", 10)
-    lbl = tk.Label(parent, text=text, font=f, bg=COLORS['bg'], fg=COLORS['fg'])
-    lbl.pack(side=tk.LEFT, padx=5)
-    ui_elements.append({'type': 'label', 'widget': lbl})
-    return lbl
-
-
-def create_entry(parent, default_val, width=5):
-    ent = tk.Entry(parent, width=width, bg=COLORS['entry_bg'], fg=COLORS['entry_fg'], insertbackground=COLORS['fg'])
-    ent.insert(0, str(default_val))
-    ent.pack(side=tk.LEFT, padx=2)
-    ui_elements.append({'type': 'entry', 'widget': ent})
-    return ent
-
-
-# --- 1. TOP CONTROL PANEL ---
-control_frame = tk.Frame(root, bd=2, relief=tk.GROOVE, bg=COLORS['bg'])
-control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
-ui_elements.append({'type': 'frame', 'widget': control_frame})
-
-# A. Port Selection
-frame_port = tk.Frame(control_frame, bg=COLORS['bg'])
-frame_port.pack(side=tk.LEFT, padx=5)
-ui_elements.append({'type': 'frame', 'widget': frame_port})
-
-create_label(frame_port, "Port:", bold=True)
-
-sys_ports = [p.device for p in serial.tools.list_ports.comports()]
-manual_ports = [f"COM{i}" for i in range(1, 33)]
-all_available_ports = list(set(sys_ports + manual_ports))
-
-
-def port_sort(x):
-    if x.startswith("COM") and x[3:].isdigit(): return int(x[3:])
-    return x
-
-
-all_available_ports.sort(key=port_sort)
-
-combo_ports = ttk.Combobox(frame_port, values=all_available_ports, width=8)
-combo_ports.pack(side=tk.LEFT, padx=2)
-
-if serial_connection:
-    combo_ports.set(serial_connection.port)
-elif "COM1" in all_available_ports:
-    combo_ports.set("COM1")
-elif all_available_ports:
-    combo_ports.current(0)
-
-
-def manual_connect():
-    global serial_connection
-    selected_port = combo_ports.get()
-    logging.info(f"Manual connection requested to {selected_port}")
-
-    if serial_connection and serial_connection.is_open:
-        serial_connection.close()
-
-    try:
-        serial_connection = serial.Serial(selected_port, BAUD_RATE, timeout=1.5)
-        serial_connection.reset_input_buffer()
-        logging.info(f"Connected to {selected_port}")
-        root.title(f"TermoReciever - {selected_port}")
-        lbl_status.config(text=f"Status: Connected to {selected_port}", fg="green")
-    except Exception as e:
-        logging.error(f"Connection failed: {e}")
-        lbl_status.config(text=f"Error: {e}", fg="red")
-        serial_connection = None
-        root.title("TermoReciever - Disconnected")
-
-
-btn_connect = tk.Button(frame_port, text="Connect", command=manual_connect, bg=COLORS['btn_bg'], fg=COLORS['btn_fg'])
-btn_connect.pack(side=tk.LEFT, padx=5)
-ui_elements.append({'type': 'button', 'widget': btn_connect})
-
-# Separator
-tk.Frame(control_frame, width=2, bd=1, relief=tk.SUNKEN).pack(side=tk.LEFT, fill=tk.Y, padx=10)
-
-# B. Settings
-create_label(control_frame, "Y-Axis:", bold=True)
-entry_min_y = create_entry(control_frame, current_y_min)
-create_label(control_frame, "-")
-entry_max_y = create_entry(control_frame, current_y_max)
-
-tk.Frame(control_frame, width=10, bg=COLORS['bg']).pack(side=tk.LEFT)
-
-create_label(control_frame, "Window:", bold=True)
-entry_width_x = create_entry(control_frame, current_window_width, width=6)
-
-
-def apply_settings():
-    global current_y_min, current_y_max, current_window_width
-    global visible_x, visible_y
-    try:
-        new_min = float(entry_min_y.get())
-        new_max = float(entry_max_y.get())
-        new_width = int(entry_width_x.get())
-
-        if new_min >= new_max: return
-        if new_width < 2: return
-
-        current_y_min, current_y_max, current_window_width = new_min, new_max, new_width
-        logging.info("Settings applied.")
-
-        # Trim data if window size decreased
-        if len(visible_x) > current_window_width:
-            visible_x = visible_x[-current_window_width:]
-            for i in range(len(visible_y)):
-                visible_y[i] = visible_y[i][-current_window_width:]
-
-        canvas.draw()
-    except:
-        pass
-
-
-btn_apply = tk.Button(control_frame, text="Apply", command=apply_settings, bg=COLORS['btn_bg'], fg=COLORS['btn_fg'])
-btn_apply.pack(side=tk.LEFT, padx=15)
-ui_elements.append({'type': 'button', 'widget': btn_apply})
-
-# (Theme Toggle Button Removed)
-
-# Current Temp (Right)
-lbl_current_temp = tk.Label(control_frame, text="T: --.--", font=("Arial", 16, "bold"), bg=COLORS['bg'],
-                            fg=COLORS['fg'])
-lbl_current_temp.pack(side=tk.RIGHT, padx=20)
-ui_elements.append({'type': 'label_temp', 'widget': lbl_current_temp})
-
-# --- 2. PLOT AREA ---
-fig = Figure(figsize=(5, 4), dpi=100)
-fig.subplots_adjust(bottom=0.25)
-# Set dark theme for Plot
-fig.patch.set_facecolor(COLORS['plot_bg'])
-ax = fig.add_subplot(111)
-ax.set_facecolor(COLORS['plot_bg'])
-for sp in ax.spines.values(): sp.set_color(COLORS['axis_color'])
-ax.tick_params(colors=COLORS['axis_color'])
-ax.yaxis.label.set_color(COLORS['axis_color'])
-ax.xaxis.label.set_color(COLORS['axis_color'])
-ax.grid(True, linestyle='--', alpha=0.5, color='#505050')
-
-lines = []
-
-canvas = FigureCanvasTkAgg(fig, master=root)
-canvas.draw()
-canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
-
-# --- 3. STATUS BAR ---
-status_frame = tk.Frame(root, bd=1, relief=tk.SUNKEN, bg=COLORS['entry_bg'])
-status_frame.pack(side=tk.BOTTOM, fill=tk.X)
-ui_elements.append({'type': 'frame', 'widget': status_frame})
-lbl_status = tk.Label(status_frame, text="Status: Waiting...", font=("Consolas", 9), anchor="w", bg=COLORS['entry_bg'],
-                      fg=COLORS['fg'])
-lbl_status.pack(side=tk.LEFT, fill=tk.X, padx=5)
-
-
-# ==========================================
-# 6. MAIN LOOP (RING BUFFER LOGIC)
-# ==========================================
-def run_app_cycle():
+class TimeAxisItem(pg.AxisItem):
     """
-    Main loop with manual update rate.
-    Deletes data that goes beyond the window width.
+    Кастомная ось X для отображения времени в формате HH:MM:SS.
+    Принимает timestamp (float) и превращает его в строку.
     """
-    global visible_x, visible_y
 
-    has_new_data = False
+    def tickStrings(self, values, scale, spacing):
+        return [datetime.datetime.fromtimestamp(value).strftime("%H:%M:%S") for value in values]
 
-    # 1. READ PORT
-    if serial_connection and serial_connection.is_open:
+
+# ==========================================
+# 2. ОСНОВНОЕ ОКНО
+# ==========================================
+class MainWindow(QMainWindow):
+    def __init__(self, window_width):
+        super().__init__()
+
+        self.setWindowTitle("TermoReceiver (GPU Accelerated)")
+        self.resize(1000, 750)
+
+        # --- Переменные состояния ---
+        self.serial_connection = None
+        self.window_width = window_width
+        self.y_min = 10.0
+        self.y_max = 25.0
+
+        # Буферы данных (храним данные для графика)
+        # x_data - список timestamp
+        # y_data - список списков (каналов)
+        self.x_data = []
+        self.y_data = []
+        self.lines = []  # Ссылки на объекты линий PyQtGraph
+
+        # CSV
+        self.init_csv()
+
+        # --- GUI Setup ---
+        self.setup_ui()
+        self.apply_dark_theme()
+
+        # --- Таймер основного цикла (вместо while True) ---
+        # 20 мс = 50 FPS. Для PyQtGraph это легкая разминка.
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.run_app_cycle)
+        self.timer.start(20)
+
+        # Авто-подключение при старте
+        self.auto_find_port()
+
+    def init_csv(self):
+        start_time_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.csv_filename = f"{start_time_str}.csv"
         try:
-            while serial_connection.in_waiting > 0:
-                raw_bytes = serial_connection.readline()
-                try:
-                    raw_str = raw_bytes.decode('utf-8').strip()
-                except:
-                    raw_str = str(raw_bytes)
+            self.csv_file = open(self.csv_filename, mode='w', newline='', encoding='utf-8')
+            self.csv_writer = csv.writer(self.csv_file, delimiter=',')
+            self.csv_writer.writerow(["System Time", "Values..."])
+            self.csv_file.flush()
+            logging.info(f"CSV created: {self.csv_filename}")
+        except Exception as e:
+            logging.error(f"CSV Error: {e}")
 
-                if raw_str:
-                    parts = raw_str.split('!')
-                    current_values = []
-                    for part in parts:
-                        if not part.strip(): continue
+    def setup_ui(self):
+        # Основной контейнер
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setSpacing(5)
+
+        # --- 1. ВЕРХНЯЯ ПАНЕЛЬ УПРАВЛЕНИЯ ---
+        control_layout = QHBoxLayout()
+
+        # Рамка для панели
+        control_frame = QFrame()
+        control_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        control_frame.setLayout(control_layout)
+        control_frame.setStyleSheet("background-color: #353535; border-radius: 5px;")
+        main_layout.addWidget(control_frame)
+
+        # Выбор порта
+        control_layout.addWidget(QLabel("Port:"))
+        self.combo_ports = QComboBox()
+        self.combo_ports.setMinimumWidth(80)
+        self.refresh_ports()
+        control_layout.addWidget(self.combo_ports)
+
+        self.btn_connect = QPushButton("Connect")
+        self.btn_connect.clicked.connect(self.manual_connect)
+        self.btn_connect.setStyleSheet("background-color: #505050; color: white;")
+        control_layout.addWidget(self.btn_connect)
+
+        # Разделитель
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.VLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        control_layout.addWidget(line)
+
+        # Настройки оси Y
+        control_layout.addWidget(QLabel("Y-Axis:"))
+        self.input_ymin = QLineEdit(str(self.y_min))
+        self.input_ymin.setFixedWidth(50)
+        control_layout.addWidget(self.input_ymin)
+
+        control_layout.addWidget(QLabel("-"))
+
+        self.input_ymax = QLineEdit(str(self.y_max))
+        self.input_ymax.setFixedWidth(50)
+        control_layout.addWidget(self.input_ymax)
+
+        self.btn_apply = QPushButton("Apply")
+        self.btn_apply.clicked.connect(self.apply_settings)
+        self.btn_apply.setStyleSheet("background-color: #505050; color: white;")
+        control_layout.addWidget(self.btn_apply)
+
+        control_layout.addStretch()  # Пружина, чтобы сдвинуть температуру вправо
+
+        # Текущая температура (Крупно)
+        self.lbl_temp = QLabel("T: --.--")
+        self.lbl_temp.setStyleSheet("font-size: 18px; font-weight: bold; color: #00FF00;")
+        control_layout.addWidget(self.lbl_temp)
+
+        # --- 2. ГРАФИК (PyQtGraph) ---
+        # Используем кастомную ось времени
+        self.plot_widget = pg.PlotWidget(axisItems={'bottom': TimeAxisItem(orientation='bottom')})
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        self.plot_widget.setYRange(self.y_min, self.y_max)
+        self.plot_widget.getPlotItem().layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.addWidget(self.plot_widget)
+
+        # --- 3. СТАТУС БАР ---
+        self.lbl_status = QLabel("Status: Waiting...")
+        self.lbl_status.setStyleSheet("color: gray; font-family: Consolas;")
+        main_layout.addWidget(self.lbl_status)
+
+    def apply_dark_theme(self):
+        # Общая палитра для окна (Qt Style)
+        palette = QPalette()
+        palette.setColor(QPalette.ColorRole.Window, QColor("#2b2b2b"))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor("#ffffff"))
+        palette.setColor(QPalette.ColorRole.Base, QColor("#404040"))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#505050"))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#ffffff"))
+        palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#ffffff"))
+        palette.setColor(QPalette.ColorRole.Text, QColor("#ffffff"))
+        palette.setColor(QPalette.ColorRole.Button, QColor("#505050"))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor("#ffffff"))
+        palette.setColor(QPalette.ColorRole.BrightText, QColor("#ff0000"))
+        palette.setColor(QPalette.ColorRole.Link, QColor("#2a82da"))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor("#2a82da"))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+        self.setPalette(palette)
+
+    # --- ЛОГИКА ПОРТОВ ---
+    def refresh_ports(self):
+        self.combo_ports.clear()
+        ports = sorted([p.device for p in serial.tools.list_ports.comports()])
+        # Добавляем COM1..32 на всякий случай
+        for i in range(1, 33):
+            p = f"COM{i}"
+            if p not in ports: ports.append(p)
+
+        # Сортировка
+        ports.sort(key=lambda x: int(x[3:]) if x.startswith("COM") and x[3:].isdigit() else x)
+        self.combo_ports.addItems(ports)
+
+    def manual_connect(self):
+        port = self.combo_ports.currentText()
+        logging.info(f"Manual connection to {port}")
+        self.connect_port(port)
+
+    def connect_port(self, port_name):
+        if self.serial_connection and self.serial_connection.is_open:
+            self.serial_connection.close()
+
+        try:
+            self.serial_connection = serial.Serial(port_name, 9600, timeout=1.5)
+            self.serial_connection.reset_input_buffer()
+            self.setWindowTitle(f"TermoReceiver - {port_name}")
+            self.lbl_status.setText(f"Connected to {port_name}")
+            self.lbl_status.setStyleSheet("color: #00FF00;")
+        except Exception as e:
+            logging.error(f"Connection error: {e}")
+            self.lbl_status.setText(f"Error: {e}")
+            self.lbl_status.setStyleSheet("color: #FF5555;")
+            self.serial_connection = None
+
+    def auto_find_port(self):
+        logging.info("Auto-discovery started...")
+        sys_ports = [p.device for p in serial.tools.list_ports.comports()]
+        for port in sys_ports:
+            if self.check_port(port):
+                self.connect_port(port)
+                self.combo_ports.setCurrentText(port)
+                return
+        logging.warning("Auto-discovery failed.")
+
+    def check_port(self, port):
+        # Быстрая проверка: открыть, подождать, прочитать
+        try:
+            s = serial.Serial(port, 9600, timeout=1.5)
+            time.sleep(1.5)  # Ждем инициализации Arduino
+            if s.in_waiting > 0:
+                s.close()
+                return True
+            s.close()
+        except:
+            pass
+        return False
+
+    def apply_settings(self):
+        try:
+            self.y_min = float(self.input_ymin.text())
+            self.y_max = float(self.input_ymax.text())
+
+            if self.y_min >= self.y_max:
+                return
+
+            self.plot_widget.setYRange(self.y_min, self.y_max)
+            logging.info(f"Settings applied: Y={self.y_min}:{self.y_max}")
+        except ValueError:
+            pass
+
+    # --- ГЛАВНЫЙ ЦИКЛ (Вызывается таймером) ---
+    def run_app_cycle(self):
+        if not self.serial_connection or not self.serial_connection.is_open:
+            return
+
+        has_new_data = False
+        try:
+            while self.serial_connection.in_waiting > 0:
+                raw = self.serial_connection.readline()
+                try:
+                    line = raw.decode('utf-8').strip()
+                except:
+                    line = ""
+
+                if not line: continue
+
+                # Парсинг "val1!val2!val3"
+                parts = line.split('!')
+                vals = []
+                for p in parts:
+                    if p.strip():
                         try:
-                            current_values.append(float(part))
-                        except ValueError:
+                            vals.append(float(p))
+                        except:
                             pass
 
-                    if current_values:
-                        has_new_data = True
-                        now = datetime.now()
+                if vals:
+                    has_new_data = True
+                    current_ts = time.time()  # Текущее время (float)
 
-                        # Add new point
-                        visible_x.append(now.strftime('%H:%M:%S'))
+                    self.x_data.append(current_ts)
 
-                        # If more channels appeared - add lines
-                        while len(visible_y) < len(current_values):
-                            new_channel_history = [np.nan] * (len(visible_x) - 1)
-                            visible_y.append(new_channel_history)
-                            color_idx = len(lines)
-                            color = COLORS['line_colors'][color_idx % len(COLORS['line_colors'])]
-                            new_line, = ax.plot([], [], '-', linewidth=2, color=color)
-                            lines.append(new_line)
+                    # Синхронизация количества линий
+                    while len(self.y_data) < len(vals):
+                        # Создаем новый буфер для канала
+                        # Заполняем NaN, чтобы длина совпадала с X
+                        new_chan = [np.nan] * (len(self.x_data) - 1)
+                        self.y_data.append(new_chan)
 
-                        # Write values
-                        for i, val in enumerate(current_values):
-                            visible_y[i].append(val)
+                        # Создаем новую линию на графике
+                        idx = len(self.lines)
+                        color_hex = LINE_COLORS[idx % len(LINE_COLORS)]
+                        # pen=width -> толщина линии
+                        pen = pg.mkPen(color=color_hex, width=2)
+                        plot_item = self.plot_widget.plot(pen=pen)
+                        self.lines.append(plot_item)
 
-                        # If fewer channels than before - pad with NaN
-                        for i in range(len(current_values), len(visible_y)):
-                            visible_y[i].append(np.nan)
+                    # Добавляем данные
+                    for i, val in enumerate(vals):
+                        self.y_data[i].append(val)
 
-                        # === MAIN LOGIC: DELETE OLD DATA ===
-                        if len(visible_x) > current_window_width:
-                            excess = len(visible_x) - current_window_width
-                            visible_x = visible_x[excess:]
-                            for i in range(len(visible_y)):
-                                visible_y[i] = visible_y[i][excess:]
+                    # Если каналов меньше, чем было раньше
+                    for i in range(len(vals), len(self.y_data)):
+                        self.y_data[i].append(np.nan)
 
-                        # CSV (write everything to file)
-                        csv_row = [now.strftime('%Y-%m-%d %H:%M:%S.%f')] + [f"!{v}!" for v in current_values]
-                        csv_writer.writerow(csv_row)
+                    # Обрезаем старые данные (Ring Buffer)
+                    if len(self.x_data) > self.window_width:
+                        excess = len(self.x_data) - self.window_width
+                        self.x_data = self.x_data[excess:]
+                        for i in range(len(self.y_data)):
+                            self.y_data[i] = self.y_data[i][excess:]
 
-                        status_txt = " | ".join([f"{v:.1f}" for v in current_values])
-                        lbl_current_temp.config(text=f"T: {status_txt}")
-                        lbl_status.config(text=f"Status: Rx ({len(visible_x)} pts)", fg=COLORS['status_ok'])
-                    else:
-                        if raw_str:
-                            lbl_status.config(text=f"RAW: {raw_str}", fg=COLORS['status_err'])
+                    # CSV
+                    now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+                    csv_row = [now_str] + [f"!{v}!" for v in vals]
+                    self.csv_writer.writerow(csv_row)
+
+                    # GUI Text Update
+                    txt = " | ".join([f"{v:.1f}" for v in vals])
+                    self.lbl_temp.setText(f"T: {txt}")
+                    self.lbl_status.setText(f"Receiving data... ({len(self.x_data)} pts)")
+
+            if has_new_data:
+                self.update_plot()
+                self.csv_file.flush()
 
         except Exception as e:
-            lbl_status.config(text=f"Read Error: {e}", fg=COLORS['status_err'])
+            self.lbl_status.setText(f"Error: {e}")
 
-    # 2. DRAW
-    if has_new_data and visible_x:
-        try:
-            x_range = range(len(visible_x))
+    def update_plot(self):
+        # PyQtGraph очень быстрый, просто передаем массивы
+        # x_data - время, y_data[i] - значения
+        if not self.x_data: return
 
-            for i, line in enumerate(lines):
-                line.set_data(x_range, visible_y[i])
+        for i, line in enumerate(self.lines):
+            # connect='finite' позволяет корректно рисовать разрывы (NaN) если будут
+            line.setData(self.x_data, self.y_data[i], connect='finite')
 
-            ax.set_xlim(0, max(1, len(visible_x) - 1))
-            # Use global Y settings (adjustable at runtime)
-            ax.set_ylim(current_y_min, current_y_max)
-
-            n = len(visible_x)
-            if n > 0:
-                step = 1 if n < 60 else n // 60 + 1
-                idxs = list(range(0, n, step))
-                if (n - 1) not in idxs: idxs.append(n - 1)
-                ax.set_xticks(idxs)
-                ax.set_xticklabels([visible_x[i] for i in idxs], rotation=90, fontsize=8)
-
-            canvas.draw()
-            csv_file.flush()
-        except Exception as e:
-            print(f"Draw Error: {e}")
-
-    root.after(50, run_app_cycle)
+    def closeEvent(self, event):
+        # Закрытие приложения
+        if self.serial_connection:
+            self.serial_connection.close()
+        if self.csv_file:
+            self.csv_file.close()
+        event.accept()
 
 
-def on_closing():
-    try:
-        if serial_connection: serial_connection.close()
-        csv_file.close()
-    except:
-        pass
-    root.quit()
-    root.destroy()
+# ==========================================
+# 3. ТОЧКА ВХОДА
+# ==========================================
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
 
+    # 1. Диалог при старте (Ширина окна)
+    # Возвращает (int, ok)
+    width, ok = QInputDialog.getInt(
+        None,
+        "Display Settings",
+        "Enter window width (points):",
+        value=50,
+        min=2,
+        max=10000
+    )
 
-root.protocol("WM_DELETE_WINDOW", on_closing)
+    if not ok:
+        sys.exit()  # Если нажали Cancel - выход
 
-print("GUI Started.")
-run_app_cycle()
-tk.mainloop()
+    window = MainWindow(window_width=width)
+    window.show()
+
+    sys.exit(app.exec())
