@@ -1,10 +1,9 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, simpledialog, messagebox
 import serial
 import serial.tools.list_ports
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
-# import matplotlib.animation as animation  <-- БОЛЬШЕ НЕ НУЖНО
 from datetime import datetime
 import time
 import csv
@@ -30,21 +29,21 @@ logging.basicConfig(
 logging.info("=== APPLICATION STARTED ===")
 logging.info(f"Logging initialized. Writing to: {log_filename}")
 
-# --- GLOBAL SETTINGS ---
+# --- GLOBAL SETTINGS (Defaults) ---
 BAUD_RATE = 9600
 MAX_COM_PORT_CHECK = 32
 
-# Default Settings
-current_y_min = 15.0
-current_y_max = 35.0
-current_window_width = 50
+# Настройки по умолчанию
+current_y_min = 10.0  # Изменено по запросу
+current_y_max = 25.0  # Изменено по запросу
+current_window_width = 50  # Будет запрошено при старте
 
 # Global Connection Object
 serial_connection = None
 
-# Data Buffers
-full_history_x = []
-full_history_y = []
+# Data Buffers (Храним только видимую часть)
+visible_x = []
+visible_y = []
 
 # Theme State
 is_dark_mode = True
@@ -113,7 +112,6 @@ def check_port_for_data(port_name):
             try:
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if not line: continue
-
                 parts = line.split('!')
                 valid_numbers = 0
                 for part in parts:
@@ -123,13 +121,11 @@ def check_port_for_data(port_name):
                         valid_numbers += 1
                     except ValueError:
                         pass
-
                 if valid_numbers > 0:
                     print(f"SUCCESS! (Found {valid_numbers} vals)")
                     return ser
             except Exception:
                 pass
-
         print("GARBAGE")
         ser.close()
         return None
@@ -168,10 +164,11 @@ def auto_find_port():
 
 
 # ==========================================
-# 3. SETUP
+# 3. SETUP & STARTUP DIALOG
 # ==========================================
 serial_connection = auto_find_port()
 
+# CSV Logging
 start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 csv_filename = f"{start_time_str}.csv"
 try:
@@ -183,10 +180,26 @@ try:
 except Exception as e:
     logging.error(f"CSV Error: {e}")
 
-# ==========================================
-# 4. GUI IMPLEMENTATION
-# ==========================================
+# --- GUI INITIALIZATION ---
 root = tk.Tk()
+root.withdraw()  # Скрываем, пока спрашиваем
+
+# --- STARTUP DIALOG (Только ширина окна) ---
+try:
+    user_width = simpledialog.askinteger(
+        "Настройка отображения",
+        "Введите ширину окна (кол-во точек на экране):",
+        initialvalue=current_window_width,
+        minvalue=2,
+        parent=root
+    )
+    if user_width is not None:
+        current_window_width = user_width
+except Exception as e:
+    logging.error(f"Dialog Error: {e}")
+
+root.deiconify()  # Показываем окно
+
 title_port = serial_connection.port if serial_connection else "NO CONNECTION"
 root.title(f"TermoReciever - {title_port}")
 root.geometry("1000x750")
@@ -287,15 +300,24 @@ entry_width_x = create_entry(control_frame, current_window_width, width=6)
 
 def apply_settings():
     global current_y_min, current_y_max, current_window_width
+    global visible_x, visible_y
     try:
         new_min = float(entry_min_y.get())
         new_max = float(entry_max_y.get())
         new_width = int(entry_width_x.get())
+
         if new_min >= new_max: return
         if new_width < 2: return
+
         current_y_min, current_y_max, current_window_width = new_min, new_max, new_width
         logging.info("Settings applied.")
-        # Принудительная перерисовка при смене настроек
+
+        # Обрезаем данные, если окно стало меньше
+        if len(visible_x) > current_window_width:
+            visible_x = visible_x[-current_window_width:]
+            for i in range(len(visible_y)):
+                visible_y[i] = visible_y[i][-current_window_width:]
+
         canvas.draw()
     except:
         pass
@@ -386,21 +408,20 @@ update_theme_colors()
 
 
 # ==========================================
-# 6. MAIN LOOP (OPTIMIZED CPU)
+# 6. MAIN LOOP (RING BUFFER LOGIC)
 # ==========================================
 def run_app_cycle():
     """
-    Основной цикл приложения.
-    Вместо анимации Matplotlib, мы используем root.after
-    и перерисовываем график ТОЛЬКО если пришли данные.
+    Цикл с удалением старых данных, выходящих за Window Width.
     """
+    global visible_x, visible_y
+
     t = THEME['dark'] if is_dark_mode else THEME['light']
     has_new_data = False
 
     # 1. ЧИТАЕМ ПОРТ
     if serial_connection and serial_connection.is_open:
         try:
-            # Считываем все строки из буфера
             while serial_connection.in_waiting > 0:
                 raw_bytes = serial_connection.readline()
                 try:
@@ -409,7 +430,6 @@ def run_app_cycle():
                     raw_str = str(raw_bytes)
 
                 if raw_str:
-                    # Разбор данных
                     parts = raw_str.split('!')
                     current_values = []
                     for part in parts:
@@ -422,33 +442,41 @@ def run_app_cycle():
                     if current_values:
                         has_new_data = True
                         now = datetime.now()
-                        full_history_x.append(now.strftime('%H:%M:%S'))
 
-                        # Создаем новые линии, если каналов стало больше
-                        while len(full_history_y) < len(current_values):
-                            new_channel_history = [np.nan] * (len(full_history_x) - 1)
-                            full_history_y.append(new_channel_history)
+                        # Добавляем новую точку
+                        visible_x.append(now.strftime('%H:%M:%S'))
+
+                        # Если каналов стало больше - добавляем линии
+                        while len(visible_y) < len(current_values):
+                            new_channel_history = [np.nan] * (len(visible_x) - 1)
+                            visible_y.append(new_channel_history)
                             color_idx = len(lines)
                             color = t['line_colors'][color_idx % len(t['line_colors'])]
                             new_line, = ax.plot([], [], '-', linewidth=2, color=color)
                             lines.append(new_line)
 
-                        # Добавляем данные
+                        # Записываем значения
                         for i, val in enumerate(current_values):
-                            full_history_y[i].append(val)
+                            visible_y[i].append(val)
 
-                        # Заполняем остальные (если каналов стало меньше) NaN
-                        for i in range(len(current_values), len(full_history_y)):
-                            full_history_y[i].append(np.nan)
+                        # Если каналов меньше, чем было - пишем NaN
+                        for i in range(len(current_values), len(visible_y)):
+                            visible_y[i].append(np.nan)
 
-                        # CSV
+                        # === ГЛАВНАЯ ЛОГИКА: УДАЛЕНИЕ СТАРОГО ===
+                        if len(visible_x) > current_window_width:
+                            excess = len(visible_x) - current_window_width
+                            visible_x = visible_x[excess:]
+                            for i in range(len(visible_y)):
+                                visible_y[i] = visible_y[i][excess:]
+
+                        # CSV (пишем все подряд в файл)
                         csv_row = [now.strftime('%Y-%m-%d %H:%M:%S.%f')] + [f"!{v}!" for v in current_values]
                         csv_writer.writerow(csv_row)
 
-                        # Text Info
                         status_txt = " | ".join([f"{v:.1f}" for v in current_values])
                         lbl_current_temp.config(text=f"T: {status_txt}")
-                        lbl_status.config(text=f"Status: Rx ({len(full_history_x)} pts)", fg=t['status_ok'])
+                        lbl_status.config(text=f"Status: Rx ({len(visible_x)} pts)", fg=t['status_ok'])
                     else:
                         if raw_str:
                             lbl_status.config(text=f"RAW: {raw_str}", fg=t['status_err'])
@@ -456,39 +484,31 @@ def run_app_cycle():
         except Exception as e:
             lbl_status.config(text=f"Read Error: {e}", fg=t['status_err'])
 
-    # 2. РИСУЕМ (ТОЛЬКО ЕСЛИ НУЖНО)
-    if has_new_data and full_history_x:
+    # 2. РИСУЕМ
+    if has_new_data and visible_x:
         try:
-            start = max(0, len(full_history_x) - current_window_width)
-            view_x = full_history_x[start:]
+            x_range = range(len(visible_x))
 
-            # Обновляем линии
             for i, line in enumerate(lines):
-                line.set_data(range(len(view_x)), full_history_y[i][start:])
+                line.set_data(x_range, visible_y[i])
 
-            # Границы
-            ax.set_xlim(0, max(1, len(view_x) - 1))
+            ax.set_xlim(0, max(1, len(visible_x) - 1))
+            # Используем глобальные настройки Y (можно менять на лету)
             ax.set_ylim(current_y_min, current_y_max)
 
-            # Тики (подписи)
-            n = len(view_x)
+            n = len(visible_x)
             if n > 0:
                 step = 1 if n < 60 else n // 60 + 1
                 idxs = list(range(0, n, step))
                 if (n - 1) not in idxs: idxs.append(n - 1)
                 ax.set_xticks(idxs)
-                ax.set_xticklabels([view_x[i] for i in idxs], rotation=90, fontsize=8)
+                ax.set_xticklabels([visible_x[i] for i in idxs], rotation=90, fontsize=8)
 
-            # Самая "тяжелая" команда, теперь вызывается редко
             canvas.draw()
-
-            # Сброс CSV буфера
             csv_file.flush()
         except Exception as e:
             print(f"Draw Error: {e}")
 
-    # 3. ПЛАНИРУЕМ СЛЕДУЮЩИЙ ШАГ
-    # 50мс - достаточно быстрая реакция на кнопки и данные, но не грузит CPU
     root.after(50, run_app_cycle)
 
 
@@ -504,7 +524,6 @@ def on_closing():
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
 
-# Запускаем наш цикл
 print("GUI Started.")
 run_app_cycle()
 tk.mainloop()
