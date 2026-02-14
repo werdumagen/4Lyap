@@ -7,10 +7,11 @@ import serial
 import serial.tools.list_ports
 import numpy as np
 
+# Добавил QMessageBox в импорты для всплывающего окна
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QComboBox, QPushButton,
-                             QLineEdit, QInputDialog, QFrame, QSplashScreen)
-from PyQt6.QtCore import QTimer
+                             QLineEdit, QInputDialog, QFrame, QSplashScreen, QMessageBox)
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QColor, QPalette, QPixmap
 
 import pyqtgraph as pg
@@ -67,12 +68,10 @@ def check_port_for_data(port_name):
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if not line: continue
 
-                # Ищем наличие ! и чисел
                 if '!' in line:
                     parts = line.split('!')
                     valid_nums = 0
                     for p in parts:
-                        # Проверка на число (включая отрицательные)
                         if p.strip().replace('.', '', 1).isdigit():
                             valid_nums += 1
                         elif p.startswith('-') and p[1:].replace('.', '', 1).isdigit():
@@ -104,8 +103,8 @@ class TimeAxisItem(pg.AxisItem):
 class MainWindow(QMainWindow):
     def __init__(self, window_width):
         super().__init__()
-        self.setWindowTitle("TermoReceiver (Custom Format)")
-        self.resize(1000, 750)
+        self.setWindowTitle("TermoReceiver (Illia Pysarevskyi Edition)")
+        self.resize(1100, 750)  # Чуть расширил окно, чтобы влезла надпись
 
         self.serial_connection = None
         self.window_width = window_width
@@ -131,7 +130,6 @@ class MainWindow(QMainWindow):
         self.csv_filename = f"{start_time_str}.csv"
         try:
             self.csv_file = open(self.csv_filename, mode='w', newline='', encoding='utf-8')
-            # Заголовок тоже можно сделать похожим на формат
             self.csv_file.write("Date!Time Values...\n")
             self.csv_file.flush()
         except Exception:
@@ -146,10 +144,16 @@ class MainWindow(QMainWindow):
         # Control Panel
         control_layout = QHBoxLayout()
         control_frame = QFrame()
-        control_frame.setStyleSheet("background-color: #353535; border-radius: 5px;")
+        # Добавил 'color: white' в стиль, чтобы весь текст внутри был белым
+        control_frame.setStyleSheet("""
+            background-color: #353535; 
+            border-radius: 5px; 
+            color: white;
+        """)
         control_frame.setLayout(control_layout)
         main_layout.addWidget(control_frame)
 
+        # 1. Port
         control_layout.addWidget(QLabel("Port:"))
         self.combo_ports = QComboBox()
         self.combo_ports.setMinimumWidth(80)
@@ -161,19 +165,42 @@ class MainWindow(QMainWindow):
         btn_connect.setStyleSheet("background-color: #505050; color: white;")
         control_layout.addWidget(btn_connect)
 
+        # 2. Settings
         control_layout.addWidget(QLabel(" |  Y-Axis:"))
         self.input_ymin = QLineEdit(str(self.y_min))
         self.input_ymin.setFixedWidth(50)
+        # Стиль для полей ввода (чтобы текст внутри тоже был читаем)
+        input_style = "background-color: #505050; color: white; border: 1px solid #707070;"
+        self.input_ymin.setStyleSheet(input_style)
         control_layout.addWidget(self.input_ymin)
+
         control_layout.addWidget(QLabel("-"))
+
         self.input_ymax = QLineEdit(str(self.y_max))
         self.input_ymax.setFixedWidth(50)
+        self.input_ymax.setStyleSheet(input_style)
         control_layout.addWidget(self.input_ymax)
 
         btn_apply = QPushButton("Apply")
         btn_apply.clicked.connect(self.apply_settings)
         btn_apply.setStyleSheet("background-color: #505050; color: white;")
         control_layout.addWidget(btn_apply)
+
+        # === НОВЫЕ ЭЛЕМЕНТЫ (Авторство и Контакты) ===
+        control_layout.addSpacing(15)  # Отступ от кнопки Apply
+
+        # Надпись (стиль color:white наследуется от frame, но зададим явно для надежности)
+        lbl_author = QLabel("made by Illia Pysarevskyi. 2026")
+        lbl_author.setStyleSheet("color: white; font-weight: normal;")
+        control_layout.addWidget(lbl_author)
+
+        control_layout.addSpacing(10)
+
+        btn_contact = QPushButton("Get in contact")
+        btn_contact.setStyleSheet("background-color: #505050; color: white;")
+        btn_contact.clicked.connect(self.show_contact_popup)
+        control_layout.addWidget(btn_contact)
+        # ===============================================
 
         control_layout.addStretch()
         self.lbl_temp = QLabel("T: --.--")
@@ -190,6 +217,15 @@ class MainWindow(QMainWindow):
         self.lbl_status = QLabel("Status: Waiting...")
         self.lbl_status.setStyleSheet("color: gray;")
         main_layout.addWidget(self.lbl_status)
+
+    def show_contact_popup(self):
+        """Открывает всплывающее окно с контактами"""
+        msg = QMessageBox()
+        msg.setWindowTitle("Contact Info")
+        msg.setText("Let`s get in contact!\nillia.pysarevskyi@knu.ua")
+        # Стилизация самого popup окна (опционально, чтобы соответствовать темной теме)
+        # msg.setStyleSheet("background-color: #2b2b2b; color: white;")
+        msg.exec()
 
     def apply_dark_theme(self):
         palette = QPalette()
@@ -302,33 +338,25 @@ class MainWindow(QMainWindow):
                         self.x_data = self.x_data[-self.window_width:]
                         for i in range(len(self.y_data)): self.y_data[i] = self.y_data[i][-self.window_width:]
 
-                    # === НОВАЯ ЛОГИКА ФОРМАТИРОВАНИЯ ===
+                    # FORMAT: YYYY-MM-DD!HH:MM:SS.micros !val! !val!
                     now = datetime.datetime.now()
-                    # Дата
-                    date_part = now.strftime('%Y-%m-%d')
-                    # Время
-                    time_part = now.strftime('%H:%M:%S.%f')
+                    timestamp_str = f"{now.strftime('%Y-%m-%d')!now.strftime('%H:%M:%S.%f')}"
 
-                    # Собираем timestamp с восклицательным знаком: "2026-02-14!14:19:17.000720"
-                    timestamp_str = f"{date_part}!{time_part}"
-
-                    # Собираем значения: "!32.33! !16.72!"
                     formatted_vals = [f"!{v}!" for v in vals]
                     values_str = " ".join(formatted_vals)
 
-                    # Итоговая строка: "ДАТА!ВРЕМЯ !ЗНАЧ! !ЗНАЧ!\n"
-                    full_line = f"{timestamp_str} {values_str}\n"
+                    full_line = f"{now.strftime('%Y-%m-%d')}!{now.strftime('%H:%M:%S.%f')} {values_str}\n"
 
                     self.csv_file.write(full_line)
-                    # ====================================
 
                     self.lbl_temp.setText("T: " + " | ".join([f"{v:.1f}" for v in vals]))
                     self.lbl_status.setText(f"Receiving... ({len(self.x_data)}) pts")
 
-            if has_data:
-                self.csv_file.flush()
-                if self.x_data:
-                    for i, line in enumerate(self.lines):
+                    if has_data:
+                        self.csv_file.flush()
+                    if self.x_data:
+                        for
+                    i, line in enumerate(self.lines): \
                         line.setData(self.x_data, self.y_data[i], connect='finite')
         except Exception as e:
             self.lbl_status.setText(f"Err: {e}")
@@ -345,7 +373,6 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
-    # Получаем правильный путь к картинке
     logo_path = resource_path("logo.png")
 
     if os.path.exists(logo_path):
