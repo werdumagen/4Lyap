@@ -2,7 +2,6 @@ import sys
 import os
 import time
 import datetime
-import csv
 import logging
 import serial
 import serial.tools.list_ports
@@ -11,13 +10,26 @@ import numpy as np
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QComboBox, QPushButton,
                              QLineEdit, QInputDialog, QFrame, QSplashScreen)
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QColor, QPalette, QPixmap
 
 import pyqtgraph as pg
 
+
 # ==========================================
-# 0. НАСТРОЙКИ
+# 0. РЕСУРСЫ (для упаковки в EXE)
+# ==========================================
+def resource_path(relative_path):
+    """ Получает абсолютный путь к ресурсу для PyInstaller """
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
+# ==========================================
+# 1. НАСТРОЙКИ
 # ==========================================
 pg.setConfigOption('background', '#2b2b2b')
 pg.setConfigOption('foreground', '#ffffff')
@@ -40,12 +52,9 @@ MAX_COM_PORT_CHECK = 32
 
 
 # ==========================================
-# 1. АВТОПОИСК
+# 2. АВТОПОИСК
 # ==========================================
 def check_port_for_data(port_name):
-    """
-    Пытается прочитать данные с порта без проверки in_waiting.
-    """
     print(f"Checking {port_name}...", end=" ", flush=True)
     ser = None
     try:
@@ -58,10 +67,12 @@ def check_port_for_data(port_name):
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if not line: continue
 
+                # Ищем наличие ! и чисел
                 if '!' in line:
                     parts = line.split('!')
                     valid_nums = 0
                     for p in parts:
+                        # Проверка на число (включая отрицательные)
                         if p.strip().replace('.', '', 1).isdigit():
                             valid_nums += 1
                         elif p.startswith('-') and p[1:].replace('.', '', 1).isdigit():
@@ -83,7 +94,7 @@ def check_port_for_data(port_name):
 
 
 # ==========================================
-# 2. GUI КЛАССЫ
+# 3. GUI КЛАССЫ
 # ==========================================
 class TimeAxisItem(pg.AxisItem):
     def tickStrings(self, values, scale, spacing):
@@ -93,7 +104,7 @@ class TimeAxisItem(pg.AxisItem):
 class MainWindow(QMainWindow):
     def __init__(self, window_width):
         super().__init__()
-        self.setWindowTitle("TermoReceiver (Space Separated)")
+        self.setWindowTitle("TermoReceiver (Custom Format)")
         self.resize(1000, 750)
 
         self.serial_connection = None
@@ -120,9 +131,8 @@ class MainWindow(QMainWindow):
         self.csv_filename = f"{start_time_str}.csv"
         try:
             self.csv_file = open(self.csv_filename, mode='w', newline='', encoding='utf-8')
-            # ИЗМЕНЕНИЕ ЗДЕСЬ: delimiter=' ' (пробел вместо запятой)
-            self.csv_writer = csv.writer(self.csv_file, delimiter=' ')
-            self.csv_writer.writerow(["System_Time", "Values..."])  # Убрал пробел в заголовке System_Time для красоты
+            # Заголовок тоже можно сделать похожим на формат
+            self.csv_file.write("Date!Time Values...\n")
             self.csv_file.flush()
         except Exception:
             pass
@@ -292,8 +302,25 @@ class MainWindow(QMainWindow):
                         self.x_data = self.x_data[-self.window_width:]
                         for i in range(len(self.y_data)): self.y_data[i] = self.y_data[i][-self.window_width:]
 
-                    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-                    self.csv_writer.writerow([now] + [f"!{v}!" for v in vals])
+                    # === НОВАЯ ЛОГИКА ФОРМАТИРОВАНИЯ ===
+                    now = datetime.datetime.now()
+                    # Дата
+                    date_part = now.strftime('%Y-%m-%d')
+                    # Время
+                    time_part = now.strftime('%H:%M:%S.%f')
+
+                    # Собираем timestamp с восклицательным знаком: "2026-02-14!14:19:17.000720"
+                    timestamp_str = f"{date_part}!{time_part}"
+
+                    # Собираем значения: "!32.33! !16.72!"
+                    formatted_vals = [f"!{v}!" for v in vals]
+                    values_str = " ".join(formatted_vals)
+
+                    # Итоговая строка: "ДАТА!ВРЕМЯ !ЗНАЧ! !ЗНАЧ!\n"
+                    full_line = f"{timestamp_str} {values_str}\n"
+
+                    self.csv_file.write(full_line)
+                    # ====================================
 
                     self.lbl_temp.setText("T: " + " | ".join([f"{v:.1f}" for v in vals]))
                     self.lbl_status.setText(f"Receiving... ({len(self.x_data)}) pts")
@@ -313,13 +340,16 @@ class MainWindow(QMainWindow):
 
 
 # ==========================================
-# 4. ЗАПУСК СО СПЛЕШ-СКРИНОМ
+# 4. ЗАПУСК
 # ==========================================
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
-    if os.path.exists("logo.png"):
-        pixmap = QPixmap("logo.png")
+    # Получаем правильный путь к картинке
+    logo_path = resource_path("logo.png")
+
+    if os.path.exists(logo_path):
+        pixmap = QPixmap(logo_path)
         splash = QSplashScreen(pixmap)
         splash.show()
 
