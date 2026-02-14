@@ -2,16 +2,16 @@ import sys
 import os
 import time
 import datetime
-import csv
 import logging
 import serial
 import serial.tools.list_ports
 import numpy as np
 
+# Убрали import csv, так как пишем вручную для сложного формата
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QComboBox, QPushButton,
                              QLineEdit, QInputDialog, QFrame, QSplashScreen)
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QColor, QPalette, QPixmap
 
 import pyqtgraph as pg
@@ -40,33 +40,26 @@ MAX_COM_PORT_CHECK = 32
 
 
 # ==========================================
-# 1. АВТОПОИСК (ИСПРАВЛЕННЫЙ)
+# 1. АВТОПОИСК
 # ==========================================
 def check_port_for_data(port_name):
-    """
-    Пытается прочитать данные с порта без проверки in_waiting.
-    """
     print(f"Checking {port_name}...", end=" ", flush=True)
     ser = None
     try:
         ser = serial.Serial(port_name, BAUD_RATE, timeout=1.5)
         ser.reset_input_buffer()
-
-        # Ждем инициализации
         time.sleep(1.5)
 
-        # Пробуем 3 раза прочитать строку
         for _ in range(3):
             try:
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if not line: continue
 
-                # Проверка: есть ли '!' (маркер нашего протокола)
                 if '!' in line:
-                    # Проверка: есть ли числа
                     parts = line.split('!')
                     valid_nums = 0
                     for p in parts:
+                        # Проверка на число (включая отрицательные)
                         if p.strip().replace('.', '', 1).isdigit():
                             valid_nums += 1
                         elif p.startswith('-') and p[1:].replace('.', '', 1).isdigit():
@@ -98,7 +91,7 @@ class TimeAxisItem(pg.AxisItem):
 class MainWindow(QMainWindow):
     def __init__(self, window_width):
         super().__init__()
-        self.setWindowTitle("TermoReceiver (Fixed)")
+        self.setWindowTitle("TermoReceiver (Custom CSV Format)")
         self.resize(1000, 750)
 
         self.serial_connection = None
@@ -114,10 +107,8 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self.apply_dark_theme()
 
-        # Запускаем поиск
         self.robust_auto_find_port()
 
-        # Таймер (20ms)
         self.timer = QTimer()
         self.timer.timeout.connect(self.run_app_cycle)
         self.timer.start(20)
@@ -126,9 +117,10 @@ class MainWindow(QMainWindow):
         start_time_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.csv_filename = f"{start_time_str}.csv"
         try:
+            # Открываем как обычный текстовый файл
             self.csv_file = open(self.csv_filename, mode='w', newline='', encoding='utf-8')
-            self.csv_writer = csv.writer(self.csv_file, delimiter=',')
-            self.csv_writer.writerow(["System Time", "Values..."])
+            # Пишем заголовок вручную
+            self.csv_file.write("System_Time, Values...\n")
             self.csv_file.flush()
         except Exception:
             pass
@@ -298,8 +290,21 @@ class MainWindow(QMainWindow):
                         self.x_data = self.x_data[-self.window_width:]
                         for i in range(len(self.y_data)): self.y_data[i] = self.y_data[i][-self.window_width:]
 
-                    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-                    self.csv_writer.writerow([now] + [f"!{v}!" for v in vals])
+                    # === ЛОГИКА ЗАПИСИ В ФАЙЛ (РУЧНАЯ СБОРКА СТРОКИ) ===
+                    # 1. Время
+                    now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+
+                    # 2. Значения в формате !число!
+                    formatted_vals = [f"!{v}!" for v in vals]
+
+                    # 3. Соединяем значения пробелами
+                    values_str = " ".join(formatted_vals)
+
+                    # 4. Финальная строка: ВРЕМЯ + ЗАПЯТАЯ + ЗНАЧЕНИЯ
+                    full_line = f"{now_str}, {values_str}\n"
+
+                    self.csv_file.write(full_line)
+                    # ====================================================
 
                     self.lbl_temp.setText("T: " + " | ".join([f"{v:.1f}" for v in vals]))
                     self.lbl_status.setText(f"Receiving... ({len(self.x_data)}) pts")
@@ -318,27 +323,20 @@ class MainWindow(QMainWindow):
         e.accept()
 
 
-# ==========================================
-# 4. ЗАПУСК СО СПЛЕШ-СКРИНОМ
-# ==========================================
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
-    # 1. SPLASH SCREEN LOGIC
     if os.path.exists("logo.png"):
         pixmap = QPixmap("logo.png")
         splash = QSplashScreen(pixmap)
         splash.show()
 
-        # Держим заставку 3 секунды, позволяя приложению обрабатывать события
         start_time = time.time()
         while time.time() - start_time < 3:
             app.processEvents()
             time.sleep(0.01)
-
         splash.close()
 
-    # 2. ДИАЛОГ НАСТРОЙКИ
     w, ok = QInputDialog.getInt(None, "Settings", "Window Width:", value=50, min=2)
     if ok:
         win = MainWindow(w)
