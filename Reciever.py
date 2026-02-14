@@ -7,7 +7,7 @@ import serial
 import serial.tools.list_ports
 import numpy as np
 
-# Добавил QMessageBox в импорты для всплывающего окна
+# Импорты PyQt6
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QComboBox, QPushButton,
                              QLineEdit, QInputDialog, QFrame, QSplashScreen, QMessageBox)
@@ -216,10 +216,14 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.lbl_status)
 
     def show_contact_popup(self):
-        """Открывает всплывающее окно с контактами"""
+        """Открывает всплывающее окно с контактами, где текст можно копировать"""
         msg = QMessageBox()
         msg.setWindowTitle("Contact Info")
-        msg.setText("Let`s get in contact!\nillia.pysarevskyi@knu.ua")
+        msg.setText("Let's get in contact!\nillia.pysarevskyi@knu.ua")
+
+        # === ВОТ ЭТА МАГИЧЕСКАЯ СТРОКА РАЗРЕШАЕТ ВЫДЕЛЕНИЕ ===
+        msg.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
         msg.exec()
 
     def apply_dark_theme(self):
@@ -333,9 +337,8 @@ class MainWindow(QMainWindow):
                         self.x_data = self.x_data[-self.window_width:]
                         for i in range(len(self.y_data)): self.y_data[i] = self.y_data[i][-self.window_width:]
 
-                    # === ИСПРАВЛЕННАЯ СТРОКА ===
+                    # FORMAT: YYYY-MM-DD!HH:MM:SS.micros !val! !val!
                     now = datetime.datetime.now()
-                    # Формируем строку вида: 2026-02-14!14:19:17.000720
                     timestamp_str = f"{now.strftime('%Y-%m-%d')}!{now.strftime('%H:%M:%S.%f')}"
 
                     formatted_vals = [f"!{v}!" for v in vals]
@@ -344,7 +347,6 @@ class MainWindow(QMainWindow):
                     full_line = f"{timestamp_str} {values_str}\n"
 
                     self.csv_file.write(full_line)
-                    # ============================
 
                     self.lbl_temp.setText("T: " + " | ".join([f"{v:.1f}" for v in vals]))
                     self.lbl_status.setText(f"Receiving... ({len(self.x_data)}) pts")
