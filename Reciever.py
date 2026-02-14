@@ -104,7 +104,7 @@ class MainWindow(QMainWindow):
     def __init__(self, window_width):
         super().__init__()
         self.setWindowTitle("TermoReceiver (Illia Pysarevskyi Edition)")
-        self.resize(1100, 750)  # Чуть расширил окно, чтобы влезла надпись
+        self.resize(1100, 750)
 
         self.serial_connection = None
         self.window_width = window_width
@@ -144,7 +144,6 @@ class MainWindow(QMainWindow):
         # Control Panel
         control_layout = QHBoxLayout()
         control_frame = QFrame()
-        # Добавил 'color: white' в стиль, чтобы весь текст внутри был белым
         control_frame.setStyleSheet("""
             background-color: #353535; 
             border-radius: 5px; 
@@ -169,7 +168,6 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(QLabel(" |  Y-Axis:"))
         self.input_ymin = QLineEdit(str(self.y_min))
         self.input_ymin.setFixedWidth(50)
-        # Стиль для полей ввода (чтобы текст внутри тоже был читаем)
         input_style = "background-color: #505050; color: white; border: 1px solid #707070;"
         self.input_ymin.setStyleSheet(input_style)
         control_layout.addWidget(self.input_ymin)
@@ -187,9 +185,8 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(btn_apply)
 
         # === НОВЫЕ ЭЛЕМЕНТЫ (Авторство и Контакты) ===
-        control_layout.addSpacing(15)  # Отступ от кнопки Apply
+        control_layout.addSpacing(15)
 
-        # Надпись (стиль color:white наследуется от frame, но зададим явно для надежности)
         lbl_author = QLabel("made by Illia Pysarevskyi. 2026")
         lbl_author.setStyleSheet("color: white; font-weight: normal;")
         control_layout.addWidget(lbl_author)
@@ -223,8 +220,6 @@ class MainWindow(QMainWindow):
         msg = QMessageBox()
         msg.setWindowTitle("Contact Info")
         msg.setText("Let`s get in contact!\nillia.pysarevskyi@knu.ua")
-        # Стилизация самого popup окна (опционально, чтобы соответствовать темной теме)
-        # msg.setStyleSheet("background-color: #2b2b2b; color: white;")
         msg.exec()
 
     def apply_dark_theme(self):
@@ -338,25 +333,26 @@ class MainWindow(QMainWindow):
                         self.x_data = self.x_data[-self.window_width:]
                         for i in range(len(self.y_data)): self.y_data[i] = self.y_data[i][-self.window_width:]
 
-                    # FORMAT: YYYY-MM-DD!HH:MM:SS.micros !val! !val!
+                    # === ИСПРАВЛЕННАЯ СТРОКА ===
                     now = datetime.datetime.now()
-                    timestamp_str = f"{now.strftime('%Y-%m-%d')!now.strftime('%H:%M:%S.%f')}"
+                    # Формируем строку вида: 2026-02-14!14:19:17.000720
+                    timestamp_str = f"{now.strftime('%Y-%m-%d')}!{now.strftime('%H:%M:%S.%f')}"
 
                     formatted_vals = [f"!{v}!" for v in vals]
                     values_str = " ".join(formatted_vals)
 
-                    full_line = f"{now.strftime('%Y-%m-%d')}!{now.strftime('%H:%M:%S.%f')} {values_str}\n"
+                    full_line = f"{timestamp_str} {values_str}\n"
 
                     self.csv_file.write(full_line)
+                    # ============================
 
                     self.lbl_temp.setText("T: " + " | ".join([f"{v:.1f}" for v in vals]))
                     self.lbl_status.setText(f"Receiving... ({len(self.x_data)}) pts")
 
-                    if has_data:
-                        self.csv_file.flush()
-                    if self.x_data:
-                        for
-                    i, line in enumerate(self.lines): \
+            if has_data:
+                self.csv_file.flush()
+                if self.x_data:
+                    for i, line in enumerate(self.lines):
                         line.setData(self.x_data, self.y_data[i], connect='finite')
         except Exception as e:
             self.lbl_status.setText(f"Err: {e}")
